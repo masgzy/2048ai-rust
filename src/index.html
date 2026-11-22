@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="only light">
+<meta name="supported-color-schemes" content="light">
+<meta name="theme-color" content="#faf8ef">
+<title>2048</title>
+<style>
+:root { color-scheme: only light; }
+* { box-sizing: border-box; }
+html { background: #faf8ef; }
+body {
+  margin: 0; padding: 0;
+  background: #faf8ef; color: #776e65;
+  font-family: "Clear Sans", "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 18px;
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+}
+.container { width: min(500px, calc(100% - 40px)); margin: 0 auto; }
+
+/* ---------- 头部 ---------- */
+.heading { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 8px; padding-top: 24px; }
+.title { font-size: 72px; font-weight: 800; margin: 0; line-height: 1; color: #776e65; }
+.subtitle { margin-top: 6px; font-weight: 700; font-size: 17px; }
+.scores { display: flex; gap: 5px; margin-left: auto; }
+.score-box { position: relative; background: #bbada0; color: #f9f6f2; border-radius: 3px; padding: 8px 16px; text-align: center; min-width: 84px; }
+.score-box .lbl { font-size: 12px; font-weight: 700; color: #eee4da; letter-spacing: 1px; }
+.score-box .val { font-size: 23px; font-weight: 800; margin-top: 1px; font-variant-numeric: tabular-nums; }
+.score-add { position: absolute; left: 0; top: 40%; width: 100%; text-align: center; font-size: 20px; font-weight: 800; color: rgba(119,110,101,.95); pointer-events: none; animation: rise 700ms ease-in forwards; }
+@keyframes rise { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-44px); } }
+
+/* ---------- 控制行 ---------- */
+.above { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.btn { display: inline-block; background: #8f7a66; color: #f9f6f2; border: none; border-radius: 3px; height: 40px; padding: 0 20px; font-size: 16px; font-weight: 700; line-height: 40px; cursor: pointer; user-select: none; font-family: inherit; text-align: center; }
+.btn:hover { background: #9f8b77; }
+.btn.small { height: 34px; line-height: 34px; padding: 0 14px; font-size: 14px; }
+.toggle { display: flex; align-items: center; gap: 6px; font-weight: 700; cursor: pointer; font-size: 15px; }
+.toggle input { accent-color: #8f7a66; width: 17px; height: 17px; }
+.speed-wrap { display: flex; align-items: center; gap: 8px; flex: 1 1 230px; min-width: 210px; font-size: 14px; font-weight: 700; }
+.speed-wrap input[type=range] { flex: 1; accent-color: #8f7a66; min-width: 80px; }
+#speedVal { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#conn { font-size: 12px; font-weight: 700; color: #8f7a66; }
+#conn.err { color: #f65e3b; }
+
+/* ---------- 棋盘 ---------- */
+.board-wrap { position: relative; margin-top: 16px; }
+.board { position: relative; width: 100%; aspect-ratio: 1/1; background: #bbada0; border-radius: 8px; touch-action: none; overflow: hidden; }
+.cell, .tile { position: absolute; top: 0; left: 0; width: calc(106.25px * var(--u, 1)); height: calc(106.25px * var(--u, 1)); border-radius: 4px; }
+.cell { background: rgba(238,228,218,.35); }
+.tile { z-index: 10; transition: transform 100ms ease-in-out; }
+.no-anim .tile { transition: none; }
+.no-anim .tile-inner { animation: none !important; }
+.tile-inner { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: calc(55px * var(--u, 1)); border-radius: 4px; background: #eee4da; color: #776e65; }
+.tile-big .tile-inner { font-size: calc(45px * var(--u, 1)); }
+.tile-xl .tile-inner { font-size: calc(35px * var(--u, 1)); }
+.tile-super .tile-inner { font-size: calc(30px * var(--u, 1)); }
+.tile-xxl .tile-inner { font-size: calc(24px * var(--u, 1)); }
+.tile-2 .tile-inner { background: #eee4da; color: #776e65; }
+.tile-4 .tile-inner { background: #ede0c8; color: #776e65; }
+.tile-8 .tile-inner { background: #f2b179; color: #f9f6f2; }
+.tile-16 .tile-inner { background: #f59563; color: #f9f6f2; }
+.tile-32 .tile-inner { background: #f67c5f; color: #f9f6f2; }
+.tile-64 .tile-inner { background: #f65e3b; color: #f9f6f2; }
+.tile-128 .tile-inner { background: #edcf72; color: #f9f6f2; }
+.tile-256 .tile-inner { background: #edcc61; color: #f9f6f2; }
+.tile-512 .tile-inner { background: #edc850; color: #f9f6f2; }
+.tile-1024 .tile-inner { background: #edc53f; color: #f9f6f2; }
+.tile-2048 .tile-inner { background: #edc22e; color: #f9f6f2; }
+.tile-super .tile-inner { background: #3c3a32; color: #f9f6f2; }
+@keyframes appear { 0% { transform: scale(0); } 100% { transform: scale(1); } }
+@keyframes pop { 0% { transform: scale(0); } 55% { transform: scale(1.18); } 100% { transform: scale(1); } }
+.tile-new .tile-inner { animation: appear 170ms ease 90ms backwards; }
+.tile-merged .tile-inner { animation: pop 170ms ease 90ms backwards; }
+
+/* ---------- 结束遮罩 ---------- */
+.overlay { position: absolute; inset: 0; z-index: 20; background: rgba(238,228,218,.73); border-radius: 8px; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 12px; }
+.overlay.show { display: flex; }
+.overlay .msg { font-size: 48px; font-weight: 800; color: #776e65; margin-bottom: 16px; }
+.overlay .row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
+/* ---------- 面板 ---------- */
+.panel { margin-top: 14px; background: rgba(238,228,218,.35); border-radius: 6px; padding: 12px 14px; }
+.panel h2 { margin: 0 0 8px; font-size: 15px; font-weight: 800; color: #776e65; }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(106px, 1fr)); gap: 6px 10px; font-size: 13px; }
+.stats-grid b { font-variant-numeric: tabular-nums; font-weight: 800; }
+.multi-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 14px; font-weight: 700; }
+.multi-controls input[type=number] { width: 56px; height: 34px; border: 2px solid #bbada0; border-radius: 3px; background: #fff; color: #776e65; font-size: 15px; font-weight: 700; padding: 0 6px; }
+#multiSummary { font-size: 12px; font-weight: 600; flex: 1 1 100%; }
+.mini-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-top: 10px; }
+.mini { background: rgba(187,173,160,.28); border-radius: 6px; padding: 8px; }
+.mhead { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 700; }
+.mstat { font-size: 12px; color: #8f7a66; font-weight: 700; }
+.minfo { font-size: 12px; margin: 4px 0 6px; font-variant-numeric: tabular-nums; }
+.history { font-size: 13px; line-height: 1.75; max-height: 190px; overflow-y: auto; font-variant-numeric: tabular-nums; }
+.history .empty { color: rgba(119,110,101,.5); }
+.explain { margin: 18px 0 6px; font-size: 15px; line-height: 1.6; }
+.explain strong { font-weight: 800; }
+.footer { margin: 10px 0 40px; font-size: 12px; color: rgba(119,110,101,.8); font-variant-numeric: tabular-nums; line-height: 1.6; }
+
+@media (max-width: 520px) {
+  .heading { padding-top: 14px; }
+  .title { font-size: 44px; }
+  .subtitle { font-size: 13px; margin-top: 3px; }
+  .score-box { padding: 6px 10px; min-width: 62px; }
+  .score-box .val { font-size: 16px; }
+  .score-box .lbl { font-size: 10px; }
+  .overlay .msg { font-size: 32px; }
+  .explain { font-size: 14px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="heading">
+    <div>
+      <h1 class="title">2048</h1>
+      <div class="subtitle">连起来看看能到多少分！</div>
+    </div>
+    <div class="scores">
+      <div class="score-box" id="scoreBox"><div class="lbl">分数</div><div class="val" id="score">0</div></div>
+      <div class="score-box"><div class="lbl">最佳</div><div class="val" id="best">0</div></div>
+      <div class="score-box"><div class="lbl">最高块</div><div class="val" id="maxTile">0</div></div>
+    </div>
+  </div>
+
+  <div class="above">
+    <a class="btn" id="newGame">新游戏</a>
+    <label class="toggle"><input type="checkbox" id="autoMode" checked> 自动模式</label>
+    <div class="speed-wrap">
+      <span>速度</span>
+      <input type="range" id="speedRange" min="0" max="500" step="10" value="0">
+      <span id="speedVal">全自动（最快）</span>
+    </div>
+    <span id="conn">连接中…</span>
+  </div>
+
+  <div class="board-wrap" id="boardWrap">
+    <div class="board" id="board"></div>
+    <div class="overlay" id="overlay">
+      <div class="msg" id="overlayMsg"></div>
+      <div class="row" id="overlayBtns"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>引擎数值</h2>
+    <div class="stats-grid">
+      <span>搜索深度 <b id="stDepth">–</b></span>
+      <span>节点数 <b id="stNodes">–</b></span>
+      <span>节点/秒 <b id="stNps">–</b></span>
+      <span>每步耗时 <b id="stMs">–</b></span>
+      <span>思考预算 <b id="stBudget">–</b></span>
+      <span>评估分 <b id="stEval">–</b></span>
+      <span>步数 <b id="stMoves">0</b></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>并发刷分</h2>
+    <div class="multi-controls">
+      <label>对局数 <input type="number" id="gameCount" min="1" max="8" value="4"></label>
+      <a class="btn small" id="startMulti">启动</a>
+      <a class="btn small" id="stopMulti">全部停止</a>
+      <span id="multiSummary">尚无战绩</span>
+    </div>
+    <div class="mini-grid" id="miniGrid"></div>
+  </div>
+
+  <div class="panel">
+    <h2>战绩（最近 30 局，含主局面）</h2>
+    <div class="history" id="history"><div class="empty">还没有完成的对局。</div></div>
+  </div>
+
+  <p class="explain">
+    玩法：使用 <strong>方向键 / WASD</strong> 或<strong>触摸滑动</strong>来移动方块，相同数字的方块合并时数值翻倍，目标 8192！
+    AI 说明：勾选自动模式后由 Rust 位棋盘 expectimax 引擎代打；思考预算完全自动（按空格数与局面难度自适应），
+    速度滑杆为 0 时即最高速度，拖大于 0 表示每步至少思考相应毫秒（观看模式）。输了会自动开新局，也可以在下方并发多个对局刷分。
+  </p>
+  <div class="footer" id="footer"></div>
+</div>
+
+<script>
+'use strict';
+const TILE_MAX = 8192;
+const el = (id) => document.getElementById(id);
+const state = { minMs: 0 };
+let serverInfo = null;
+
+/* ============ 单个对局实例 ============ */
+class Game {
+  constructor(boardEl, opts) {
+    this.boardEl = boardEl;
+    this.opts = opts || {};
+    this.mini = !!this.opts.mini;
+    this.auto = this.opts.auto !== false;
+    this.tiles = new Map();
+    this.els = new Map();
+    this.dying = [];
+    this.tileId = 0;
+    this.score = 0;
+    this.best = +(localStorage.getItem('best2048') || 0);
+    this.maxTileVal = 0;
+    this.over = false;
+    this.won = false;
+    this.moves = 0;
+    this.awaiting = false;
+    this.reqId = 0;
+    this.destroyed = false;
+    this.fast = false;
+    this.lastMoveTs = 0;
+    this.lastStats = null;
+    this.u = 1; this.cell = 106.25; this.gap = 15; this.pad = 15;
+    this.overlayEl = this.opts.overlay || null;
+    this.overlayMsg = this.opts.overlayMsg || null;
+    this.overlayBtns = this.opts.overlayBtns || null;
+
+    this.cells = [];
+    for (let i = 0; i < 16; i++) {
+      const c = document.createElement('div');
+      c.className = 'cell';
+      boardEl.appendChild(c);
+      this.cells.push(c);
+    }
+    this.layout();
+    if ('ResizeObserver' in window) {
+      this.ro = new ResizeObserver(() => this.layout());
+      this.ro.observe(boardEl);
+    } else {
+      window.addEventListener('resize', () => this.layout());
+    }
+    this.connect();
+    this.reset();
+  }
+
+  layout() {
+    const w = this.boardEl.clientWidth;
+    if (w < 40) return;
+    this.u = w / 500;
+    this.cell = 106.25 * this.u;
+    this.gap = 15 * this.u;
+    this.pad = 15 * this.u;
+    this.boardEl.style.setProperty('--u', this.u);
+    for (let i = 0; i < 16; i++) {
+      this.cells[i].style.transform = this.pos(i % 4, (i / 4) | 0);
+    }
+    for (const [id, t] of this.tiles) {
+      const e = this.els.get(id);
+      if (e) e.style.transform = this.pos(t.x, t.y);
+    }
+  }
+
+  pos(x, y) {
+    const px = (this.pad + x * (this.cell + this.gap)).toFixed(2);
+    const py = (this.pad + y * (this.cell + this.gap)).toFixed(2);
+    return 'translate(' + px + 'px,' + py + 'px)';
+  }
+
+  /* ---- WebSocket ---- */
+  connect() {
+    if (this.destroyed) return;
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    try {
+      this.ws = new WebSocket(proto + '://' + location.host + '/ws');
+    } catch (e) {
+      setTimeout(() => this.connect(), 1500);
+      return;
+    }
+    this.wsOpen = false;
+    this.ws.onopen = () => {
+      this.wsOpen = true;
+      try { this.ws.send(JSON.stringify({ type: 'hello' })); } catch (_) {}
+      this.pump();
+    };
+    this.ws.onmessage = (e) => {
+      let m; try { m = JSON.parse(e.data); } catch (_) { return; }
+      this.onMsg(m);
+    };
+    this.ws.onclose = () => {
+      this.wsOpen = false;
+      if (!this.destroyed && !this.mini) {
+        setConn(false);
+        setTimeout(() => this.connect(), 1200);
+      }
+    };
+    this.ws.onerror = () => { try { this.ws.close(); } catch (_) {} };
+  }
+
+  onMsg(m) {
+    if (m.type === 'hello') {
+      serverInfo = m;
+      if (!this.mini) { setConn(true); renderFooter(); }
+      return;
+    }
+    if (m.type === 'error') {
+      this.awaiting = false;
+      if (this.auto && !this.over) setTimeout(() => this.pump(), 400);
+      return;
+    }
+    if (m.type !== 'move' || m.id !== this.reqId) return;
+    this.awaiting = false;
+    this.lastStats = m;
+    const dir = m.dir | 0;
+    let moved = this.move(dir);
+    if (!moved) for (const d of [0, 1, 2, 3]) { if (this.move(d)) { moved = true; break; } }
+    if (!this.mini) renderStats(this);
+    if (!this.over && this.auto) this.pump();
+  }
+
+  pump() {
+    if (this.destroyed || !this.auto || this.over || this.awaiting || !this.wsOpen) return;
+    this.awaiting = true;
+    this.reqId++;
+    try {
+      this.ws.send(JSON.stringify({ type: 'move', id: this.reqId, board: this.toArray(), min_ms: state.minMs }));
+    } catch (e) {
+      this.awaiting = false;
+    }
+  }
+
+  /* ---- 游戏逻辑（与服务端方向编码一致：0左 1右 2上 3下）---- */
+  toArray() {
+    const a = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
+    for (const t of this.tiles.values()) a[t.y][t.x] = t.val;
+    return a;
+  }
+
+  tileAt(x, y) {
+    for (const t of this.tiles.values()) if (t.x === x && t.y === y) return t;
+    return null;
+  }
+
+  emptyCells() {
+    const occ = [[false,false,false,false],[false,false,false,false],[false,false,false,false],[false,false,false,false]];
+    for (const t of this.tiles.values()) occ[t.y][t.x] = true;
+    const out = [];
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) if (!occ[y][x]) out.push({ x, y });
+    return out;
+  }
+
+  spawn() {
+    const es = this.emptyCells();
+    if (!es.length) return;
+    const c = es[(Math.random() * es.length) | 0];
+    const val = Math.random() < 0.9 ? 2 : 4;
+    this.tiles.set(++this.tileId, { id: this.tileId, x: c.x, y: c.y, val, isNew: true, mergedFrom: false });
+    if (val > this.maxTileVal) this.maxTileVal = val;
+  }
+
+  reset() {
+    this.tiles.clear();
+    for (const [, e] of this.els) e.remove();
+    this.els.clear();
+    this.dying = [];
+    this.score = 0;
+    this.moves = 0;
+    this.over = false;
+    this.won = false;
+    this.maxTileVal = 0;
+    this.awaiting = false;
+    this.lastStats = null;
+    this.hideOverlay();
+    if (!this.mini) { el('score').textContent = '0'; el('maxTile').textContent = '0'; renderStats(this); }
+    if (this.opts.onUpdate) this.opts.onUpdate(this);
+    this.spawn(); this.spawn();
+    this.render();
+    if (this.auto) this.pump();
+  }
+
+  move(dir) {
+    if (this.over || this.destroyed) return false;
+    const v = [{ x: -1, y: 0 }, { x: 1, y: 0 }, { x: 0, y: -1 }, { x: 0, y: 1 }][dir];
+    const xs = [0, 1, 2, 3], ys = [0, 1, 2, 3];
+    if (v.x === 1) xs.reverse();
+    if (v.y === 1) ys.reverse();
+    let moved = false, gained = 0;
+    for (const t of this.tiles.values()) { t.isNew = false; t.mergedFrom = false; }
+    for (const x of xs) for (const y of ys) {
+      const tile = this.tileAt(x, y);
+      if (!tile) continue;
+      let cx = x, cy = y;
+      for (;;) {
+        const nx = cx + v.x, ny = cy + v.y;
+        if (nx < 0 || nx > 3 || ny < 0 || ny > 3) break;
+        const nt = this.tileAt(nx, ny);
+        if (!nt) { cx = nx; cy = ny; continue; }
+        if (nt.val === tile.val && !nt.mergedFrom && !tile.mergedFrom) {
+          this.tiles.delete(tile.id);
+          this.tiles.delete(nt.id);
+          this.tiles.set(++this.tileId, { id: this.tileId, x: nx, y: ny, val: tile.val * 2, isNew: false, mergedFrom: true });
+          this.dying.push({ id: tile.id, dx: nx, dy: ny });
+          this.dying.push({ id: nt.id, dx: nx, dy: ny });
+          gained += tile.val * 2;
+          if (tile.val * 2 > this.maxTileVal) this.maxTileVal = tile.val * 2;
+          moved = true;
+        }
+        break;
+      }
+      if (!this.tiles.has(tile.id)) continue; // 已被合并
+      if (cx !== tile.x || cy !== tile.y) { tile.x = cx; tile.y = cy; moved = true; }
+    }
+    if (moved) {
+      const now = performance.now();
+      this.fast = (now - this.lastMoveTs) < 150;
+      this.lastMoveTs = now;
+      if (gained > 0) this.addScore(gained);
+      this.moves++;
+      this.spawn();
+      this.render();
+      if (this.maxTileVal >= TILE_MAX && !this.won) { this.won = true; this.onWin(); }
+      else if (this.isOver()) { this.over = true; this.onGameOver(); }
+    }
+    return moved;
+  }
+
+  isOver() {
+    if (this.emptyCells().length) return false;
+    for (const t of this.tiles.values()) {
+      const r = this.tileAt(t.x + 1, t.y);
+      if (t.x < 3 && r && r.val === t.val) return false;
+      const d = this.tileAt(t.x, t.y + 1);
+      if (t.y < 3 && d && d.val === t.val) return false;
+    }
+    return true;
+  }
+
+  addScore(g) {
+    this.score += g;
+    if (this.score > this.best) {
+      this.best = this.score;
+      try { localStorage.setItem('best2048', this.best); } catch (_) {}
+      if (!this.mini) el('best').textContent = this.best;
+    }
+    if (!this.mini) {
+      el('score').textContent = this.score;
+      el('maxTile').textContent = this.maxTileVal;
+      // 高速自动对局时飘字会堆叠，仅在慢速/手动时展示
+      if (!this.fast) {
+        const add = document.createElement('div');
+        add.className = 'score-add';
+        add.textContent = '+' + g;
+        el('scoreBox').appendChild(add);
+        setTimeout(() => add.remove(), 750);
+      }
+    }
+    if (this.opts.onUpdate) this.opts.onUpdate(this);
+  }
+
+  tileClass(t) {
+    let c = 'tile tile-' + (t.val <= 2048 ? t.val : 'super');
+    if (t.val >= 128 && t.val <= 512) c += ' tile-big';
+    else if (t.val >= 1024 && t.val <= 2048) c += ' tile-xl';
+    else if (t.val >= 16384) c += ' tile-xxl';
+    if (t.isNew) c += ' tile-new';
+    if (t.mergedFrom) c += ' tile-merged';
+    return c;
+  }
+
+  render() {
+    this.boardEl.classList.toggle('no-anim', this.fast);
+    const dyingIds = new Set(this.dying.map((d) => d.id));
+    for (const d of this.dying) {
+      const e = this.els.get(d.id);
+      if (e) {
+        e.style.transform = this.pos(d.dx, d.dy);
+        const id = d.id;
+        setTimeout(() => {
+          const e2 = this.els.get(id);
+          if (e2) { e2.remove(); this.els.delete(id); }
+        }, 130);
+      }
+    }
+    this.dying = [];
+    for (const t of this.tiles.values()) {
+      let e = this.els.get(t.id);
+      if (!e) {
+        e = document.createElement('div');
+        const inner = document.createElement('div');
+        inner.className = 'tile-inner';
+        e.appendChild(inner);
+        this.els.set(t.id, e);
+      }
+      this.boardEl.appendChild(e);
+      e.className = this.tileClass(t);
+      e.style.transform = this.pos(t.x, t.y);
+      e.firstChild.textContent = t.val;
+    }
+    for (const [id, e] of Array.from(this.els)) {
+      if (!this.tiles.has(id) && !dyingIds.has(id)) { e.remove(); this.els.delete(id); }
+    }
+  }
+
+  /* ---- 结束与胜利 ---- */
+  showOverlay(msg, buttons) {
+    if (!this.overlayEl) return;
+    this.overlayMsg.textContent = msg;
+    this.overlayBtns.innerHTML = '';
+    for (const b of buttons) {
+      const a = document.createElement('a');
+      a.className = 'btn';
+      a.textContent = b.text;
+      a.onclick = b.fn;
+      this.overlayBtns.appendChild(a);
+    }
+    this.overlayEl.classList.add('show');
+  }
+
+  hideOverlay() { if (this.overlayEl) this.overlayEl.classList.remove('show'); }
+
+  onGameOver() {
+    historyAdd(this.mini ? '并发' : '单局', this.score, this.maxTileVal, false);
+    if (this.opts.onUpdate) this.opts.onUpdate(this);
+    if (this.onEnd) this.onEnd('结束 · ' + this.score);
+    if (this.mini) return;
+    this.showOverlay('Game over!', [{ text: '再试一次', fn: () => this.reset() }]);
+    if (this.auto) setTimeout(() => { if (!this.destroyed) this.reset(); }, 700);
+  }
+
+  onWin() {
+    historyAdd(this.mini ? '并发' : '单局', this.score, this.maxTileVal, true);
+    if (this.opts.onUpdate) this.opts.onUpdate(this);
+    if (this.onEnd) this.onEnd('8192 达成！· ' + this.score);
+    if (this.mini) return;
+    this.showOverlay('你赢了！8192 达成', [
+      { text: '继续', fn: () => { this.hideOverlay(); this.pump(); } },
+      { text: '再来一局', fn: () => this.reset() }
+    ]);
+    if (this.auto) setTimeout(() => {
+      if (!this.destroyed && this.overlayEl && this.overlayEl.classList.contains('show')) {
+        this.hideOverlay(); this.pump();
+      }
+    }, 900);
+  }
+
+  destroy() {
+    this.destroyed = true;
+    try { if (this.ws) { this.ws.onclose = null; this.ws.close(); } } catch (_) {}
+    if (this.ro) this.ro.disconnect();
+    this.boardEl.innerHTML = '';
+  }
+}
+
+/* ============ 页面逻辑 ============ */
+let mainGame = null;
+const minis = [];
+
+function setConn(ok) {
+  const c = el('conn');
+  c.textContent = ok ? '已连接' : '连接断开，重连中…';
+  c.classList.toggle('err', !ok);
+}
+
+function renderFooter() {
+  if (!serverInfo) return;
+  el('footer').textContent =
+    '引擎: Rust 位棋盘 expectimax v' + serverInfo.version +
+    ' · 评估: ' + serverInfo.weights +
+    ' · CPU ' + serverInfo.cores + ' 核' +
+    ' · 方向编码 0=左 1=右 2=上 3=下' +
+    ' · 视觉风格基于原版 2048（Gabriele Cirulli, MIT）';
+}
+
+function fmtNps(n) {
+  if (!n) return '–';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' M/s';
+  if (n >= 1000) return (n / 1000).toFixed(1) + ' k/s';
+  return n + '/s';
+}
+
+function renderStats(g) {
+  const m = g.lastStats;
+  el('stMoves').textContent = g.moves;
+  if (!m) return;
+  el('stDepth').textContent = m.depth || '–';
+  el('stNodes').textContent = (m.nodes || 0).toLocaleString();
+  el('stNps').textContent = fmtNps(m.nps);
+  el('stMs').textContent = (m.ms || 0) + ' ms';
+  el('stBudget').textContent = m.budget ? m.budget + ' ms' : '–';
+  el('stEval').textContent = m.score ? Math.round(m.score).toLocaleString() : '–';
+}
+
+const history = [];
+function historyAdd(mode, score, tile, won) {
+  history.unshift({ mode, score, tile, won, t: new Date() });
+  if (history.length > 30) history.pop();
+  el('history').innerHTML = history.map((r) =>
+    '<div>· [' + r.mode + '] ' + (r.won ? '<strong>8192 达成！</strong> ' : '') +
+    '分数 ' + r.score.toLocaleString() + ' · 最高块 ' + r.tile +
+    ' · ' + r.t.toTimeString().slice(0, 8) + '</div>'
+  ).join('');
+  const total = history.reduce((s, r) => s + r.score, 0);
+  const bestH = history.reduce((m, r) => Math.max(m, r.score), 0);
+  const w8 = history.filter((r) => r.tile >= TILE_MAX).length;
+  el('multiSummary').textContent =
+    '近 ' + history.length + ' 局 · 总分 ' + total.toLocaleString() +
+    ' · 最高单局 ' + bestH.toLocaleString() + ' · 8192 达成 ' + w8 + ' 次';
+}
+
+function startMulti() {
+  stopMulti();
+  const n = Math.max(1, Math.min(8, +el('gameCount').value || 4));
+  const grid = el('miniGrid');
+  for (let i = 0; i < n; i++) {
+    const box = document.createElement('div');
+    box.className = 'mini';
+    box.innerHTML =
+      '<div class="mhead"><span>并发局 ' + (i + 1) + '</span><span class="mstat">进行中</span></div>' +
+      '<div class="minfo">分数 <b class="ms">0</b> · 最高块 <b class="mt">0</b></div>' +
+      '<div class="board"></div>';
+    grid.appendChild(box);
+    const statEl = box.querySelector('.mstat');
+    const g = new Game(box.querySelector('.board'), {
+      mini: true, auto: true,
+      onUpdate: (gm) => {
+        box.querySelector('.ms').textContent = gm.score;
+        box.querySelector('.mt').textContent = gm.maxTileVal;
+      }
+    });
+    g.onEnd = (s) => { statEl.textContent = s; };
+    minis.push(g);
+  }
+}
+
+function stopMulti() {
+  for (const g of minis) g.destroy();
+  minis.length = 0;
+  el('miniGrid').innerHTML = '';
+}
+
+function init() {
+  mainGame = new Game(el('board'), {
+    mini: false,
+    auto: el('autoMode').checked,
+    overlay: el('overlay'),
+    overlayMsg: el('overlayMsg'),
+    overlayBtns: el('overlayBtns')
+  });
+  el('best').textContent = mainGame.best;
+  el('speedVal').textContent = '全自动（最快）';
+
+  el('newGame').onclick = () => mainGame.reset();
+  el('autoMode').addEventListener('change', (e) => {
+    mainGame.auto = e.target.checked;
+    if (mainGame.auto) mainGame.pump();
+  });
+  el('speedRange').addEventListener('input', (e) => {
+    state.minMs = +e.target.value;
+    el('speedVal').textContent = state.minMs === 0 ? '全自动（最快）' : '每步 ≥ ' + state.minMs + ' ms';
+  });
+  el('startMulti').onclick = startMulti;
+  el('stopMulti').onclick = stopMulti;
+
+  document.addEventListener('keydown', (e) => {
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+    const map = { ArrowLeft: 0, ArrowRight: 1, ArrowUp: 2, ArrowDown: 3, a: 0, d: 1, w: 2, s: 3, A: 0, D: 1, W: 2, S: 3 };
+    if (e.key in map) {
+      e.preventDefault();
+      mainGame.auto = false;
+      el('autoMode').checked = false;
+      mainGame.move(map[e.key]);
+    }
+  });
+
+  const wrap = el('boardWrap');
+  let ts = null;
+  wrap.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 1) ts = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }, { passive: true });
+  wrap.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+  wrap.addEventListener('touchend', (e) => {
+    if (!ts) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - ts.x, dy = t.clientY - ts.y;
+    ts = null;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < 24) return;
+    const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 0) : (dy > 0 ? 3 : 2);
+    mainGame.auto = false;
+    el('autoMode').checked = false;
+    mainGame.move(dir);
+  });
+}
+
+init();
+</script>
+</body>
+</html>
