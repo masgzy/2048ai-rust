@@ -1,0 +1,30 @@
+[package]
+name = "ai-2048-rust"
+version = "0.2.0"
+edition = "2021"
+description = "High-performance 2048 AI: expectimax search over a 64-bit bitboard with transposition table, plus fully automated benchmarking"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/masgzy/2048ai-rust"
+keywords = ["2048", "ai", "expectimax", "game", "benchmark"]
+categories = ["games", "command-line-utilities"]
+
+[lib]
+name = "engine2048"
+path = "src/lib.rs"
+
+[[bin]]
+name = "2048ai"
+path = "src/main.rs"
+
+# Zero runtime dependencies by design:
+# - smaller attack surface (no supply-chain risk)
+# - faster CI
+# - everything (RNG, CLI, JSON) is implemented and tested in-tree
+
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true

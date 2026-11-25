@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: build, lint, test, benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable, with rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit + integration tests (release, includes AI quality gates)
+        run: cargo test --release --all --quiet
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: CLI smoke test (help/version/bestmove)
+        run: |
+          ./target/release/2048ai version
+          ./target/release/2048ai help > /dev/null
+          echo "2 0 0 0  0 0 0 0  0 0 0 0  0 0 0 4" | ./target/release/2048ai bestmove
+          if echo "3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3" | ./target/release/2048ai bestmove; then
+            echo "bestmove accepted invalid board"; exit 1
+          fi
+
+      - name: Search throughput check (>= 100k nodes/s on 1 thread, strength 5)
+        run: |
+          ./target/release/2048ai speed --secs 4 --strength 5 --threads 1 --json | tee speed.json
+          NPS=$(python3 -c "import json;print(json.load(open('speed.json'))['nodes_per_sec'])")
+          echo "nodes_per_sec = $NPS"
+          python3 -c "import sys; sys.exit(0 if float('$NPS') >= 100000 else 1)"
+
+      - name: AI quality check (2 automated games must reach 512)
+        run: |
+          ./target/release/2048ai bench --games 2 --threads 2 --strength 3 --seed 91 --goal 512 --json | tee bench.json
+          python3 - <<'EOF'
+          import json, sys
+          r = json.load(open('bench.json'))
+          print(f"bench: avg_max_tile={r['avg_max_tile']}, reached_goal={r['reached_goal']}/{r['games']}")
+          sys.exit(0 if r['reached_goal'] == r['games'] else 1)
+          EOF
