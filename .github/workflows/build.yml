@@ -288,13 +288,20 @@ jobs:
         run: |
           # 优先使用仓库内按版本存放的 release note（.github/releases/<版本号>.md，
           # 即去掉 v 前缀的标签名）；该版本没有对应文件时回退到内置模板。
+          # checkout 已检出标签指向的提交，直接查工作区文件即可。
           NOTES_FILE=".github/releases/${GITHUB_REF_NAME#v}.md"
-          if git cat-file -e "$GITHUB_REF_NAME:${NOTES_FILE}" 2>/dev/null; then
+          # alpha / beta / rc 版本自动标记为 pre-release
+          PRERELEASE_ARGS=""
+          if [[ "$GITHUB_REF_NAME" =~ -(alpha|beta|rc) ]]; then
+            PRERELEASE_ARGS="--prerelease"
+          fi
+          if [ -f "$NOTES_FILE" ]; then
             gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/*.zip out/SHA256SUMS \
               --title "ai2048 $GITHUB_REF_NAME" \
               --verify-tag \
               --generate-notes \
-              --notes-file "$NOTES_FILE"
+              --notes-file "$NOTES_FILE" \
+              $PRERELEASE_ARGS
           else
             gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/*.zip out/SHA256SUMS \
               --title "ai2048 $GITHUB_REF_NAME" \
@@ -305,5 +312,6 @@ jobs:
           - Android 四个目标为动态链接的可执行文件（Termux / Android 直接运行），其余 Linux 目标为纯静态二进制；
           - 下载后请用同目录下的 SHA256SUMS 校验：\`sha256sum -c SHA256SUMS\`。
 
-          本项目以 AGPL-3.0-or-later 许可证发布。"
+          本项目以 AGPL-3.0-or-later 许可证发布。" \
+              $PRERELEASE_ARGS
           fi
