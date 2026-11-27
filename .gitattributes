@@ -1,0 +1,5 @@
+# 文本文件统一 LF 行尾：termux.sh 与 CI 脚本若被 Windows 换成 CRLF 会直接无法执行
+* text=auto eol=lf
+
+# 预编译二进制不做任何行尾转换
+prebuilt/** binary

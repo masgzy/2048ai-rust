@@ -1,0 +1,298 @@
+name: Build
+
+# 交叉编译矩阵 + 发布。
+#
+# 默认启用 6 个主流目标：android_arm64 / android_armv7 / android_x86 / android_x86-64 /
+# linux_amd64 / windows_amd64。其余 13 个目标在下方矩阵中以注释形式预留，去掉行首的
+# "# " 即可启用（为避免占用过多公共 runner 资源，预留目标平时不构建）。
+#
+# 推送 v<版本号> 标签时，在全部目标构建成功且同一提交的 CI 通过后自动创建 GitHub Release。
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' || github.ref == 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ================= 已启用（6 个） =================
+          # tool: android = NDK clang 封装器 + 16KB 页对齐；musl = rust-lld 自包含静态链接；
+          #       native = runner 自带工具链。format 决定是否做 ELF 校验；smoke = 产物可在本 runner 直接运行
+          - name: android_arm64
+            triple: aarch64-linux-android
+            os: ubuntu-24.04
+            tool: android
+            format: elf
+          - name: android_armv7
+            triple: armv7-linux-androideabi
+            os: ubuntu-24.04
+            tool: android
+            format: elf
+          - name: android_x86
+            triple: i686-linux-android
+            os: ubuntu-24.04
+            tool: android
+            format: elf
+          - name: android_x86-64
+            triple: x86_64-linux-android
+            os: ubuntu-24.04
+            tool: android
+            format: elf
+          - name: linux_amd64
+            triple: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            tool: musl
+            format: elf
+            smoke: true
+          - name: windows_amd64
+            triple: x86_64-pc-windows-msvc
+            os: windows-latest
+            tool: native
+            format: pe
+            exe: .exe
+            smoke: true
+
+          # ================= 预留（13 个，取消注释即启用） =================
+          # --- macOS：macOS runner 的原生工具链可同时产出 amd64 与 arm64（未在 CI 中验证）---
+          # - name: darwin_amd64
+          #   triple: x86_64-apple-darwin
+          #   os: macos-latest
+          #   tool: native
+          #   format: macho
+          # - name: darwin_arm64
+          #   triple: aarch64-apple-darwin
+          #   os: macos-latest
+          #   tool: native
+          #   format: macho
+          # --- Linux：统一用 musl 静态链接，与 linux_amd64 相同的 rust-lld 自包含链接方式，
+          #     不需要安装任何交叉工具链。已用 stable 1.100 逐一验证可链接出纯静态 ELF（未在真机执行）。
+          # - name: linux_386
+          #   triple: i686-unknown-linux-musl
+          #   os: ubuntu-24.04
+          #   tool: musl
+          #   format: elf
+          # - name: linux_arm64
+          #   triple: aarch64-unknown-linux-musl
+          #   os: ubuntu-24.04
+          #   tool: musl
+          #   format: elf
+          # - name: linux_armv5
+          #   triple: armv5te-unknown-linux-musleabi
+          #   os: ubuntu-24.04
+          #   tool: musl
+          #   format: elf
+          # - name: linux_armv6
+          #   triple: arm-unknown-linux-musleabihf
+          #   os: ubuntu-24.04
+          #   tool: musl
+          #   format: elf
+          # - name: linux_armv7
+          #   triple: armv7-unknown-linux-musleabihf
+          #   os: ubuntu-24.04
+          #   tool: musl
+          #   format: elf
+          # --- MIPS：stable 工具链不再提供这四个目标的预编译标准库（tier 3），启用需要
+          #     nightly + rust-src + `cargo build -Z build-std`，并自备 MIPS musl 交叉工具链。
+          #     下方仅为占位，三元组与构建步骤均未验证。
+          # - name: linux_mips
+          #   triple: mips-unknown-linux-musl
+          #   os: ubuntu-24.04
+          #   tool: buildstd
+          #   format: elf
+          # - name: linux_mips64
+          #   triple: mips64-unknown-linux-muslabi64
+          #   os: ubuntu-24.04
+          #   tool: buildstd
+          #   format: elf
+          # - name: linux_mips64le
+          #   triple: mips64el-unknown-linux-muslabi64
+          #   os: ubuntu-24.04
+          #   tool: buildstd
+          #   format: elf
+          # - name: linux_mipsle
+          #   triple: mipsel-unknown-linux-musl
+          #   os: ubuntu-24.04
+          #   tool: buildstd
+          #   format: elf
+          # --- Windows：windows runner 自带 x86 与 ARM64 的 MSVC 工具链，可交叉编译（未在 CI 中验证）
+          # - name: windows_386
+          #   triple: i686-pc-windows-msvc
+          #   os: windows-latest
+          #   tool: native
+          #   format: pe
+          #   exe: .exe
+          # - name: windows_arm64
+          #   triple: aarch64-pc-windows-msvc
+          #   os: windows-latest
+          #   tool: native
+          #   format: pe
+          #   exe: .exe
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: 安装工具链与目标标准库
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add ${{ matrix.triple }}
+
+      - name: 配置 Android 链接器
+        if: matrix.tool == 'android'
+        run: python .github/scripts/android_linker.py ${{ matrix.triple }}
+
+      - name: 配置 Linux 静态链接
+        if: matrix.tool == 'musl'
+        run: echo "RUSTFLAGS=-C linker=rust-lld" >> "$GITHUB_ENV"
+
+      - name: 编译
+        run: cargo build --release --locked --target ${{ matrix.triple }} --bins
+
+      # 校验产物确实是目标体系结构、链接形态正确（musl 必须纯静态；Android 必须是带
+      # /system/bin/linker* 的 PIE 且段对齐 >= 16KB，否则 Android 15+ 的 16KB 页设备无法加载）
+      - name: 校验 ELF
+        if: matrix.format == 'elf'
+        run: |
+          python .github/scripts/check_elf.py --triple ${{ matrix.triple }} \
+            target/${{ matrix.triple }}/release/ai2048 \
+            target/${{ matrix.triple }}/release/simulate \
+            target/${{ matrix.triple }}/release/train
+
+      - name: 读取版本号
+        id: ver
+        run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+
+      - name: 冒烟测试（可在本 runner 运行的目标）
+        if: matrix.smoke
+        run: |
+          B=target/${{ matrix.triple }}/release
+          $B/simulate${{ matrix.exe }} --version
+          $B/simulate${{ matrix.exe }} --games 1 --max-depth 3 2>/dev/null | tail -5
+          $B/train${{ matrix.exe }} --games 2 --out "$RUNNER_TEMP/weights.json"
+          test -s "$RUNNER_TEMP/weights.json"
+          python .github/scripts/smoke.py $B/ai2048${{ matrix.exe }} --version "${{ steps.ver.outputs.version }}"
+
+      - name: 整理发布目录
+        run: |
+          python .github/scripts/package.py --triple ${{ matrix.triple }} \
+            --out "stage/ai2048-${{ matrix.name }}" --version "${{ steps.ver.outputs.version }}"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: ai2048-${{ matrix.name }}
+          path: stage/ai2048-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: 校验标签与版本号一致
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "标签名须为 v<版本号>（当前 Cargo.toml 版本为 $version，实际标签 $GITHUB_REF_NAME），中止发布。"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_ENV"
+
+      # Build 与 CI 是两个独立的工作流，job 之间无法直接依赖，这里轮询同一提交的 CI 结论。
+      # 判定标准：该提交只要有一条 CI 运行成功即放行（标签推送会额外触发一次重复的 CI 运行，
+      # 没必要等它）；尚无成功记录且仍有运行未结束则等待；全部结束且无一成功则中止。
+      - name: 确认同一提交的 CI 已通过
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          missing=0
+          for _ in $(seq 1 60); do
+            state=$(gh run list --workflow ci.yml --event push --limit 100 \
+              --json headSha,status,conclusion \
+              --jq 'map(select(.headSha == "'"$GITHUB_SHA"'"))
+                     | if length == 0 then "missing"
+                        elif any(.conclusion == "success") then "success"
+                        elif any(.status != "completed") then "pending"
+                        else (.[0].conclusion // "unknown") end')
+            case "$state" in
+              success) echo "CI 已通过"; exit 0 ;;
+              pending|"") sleep 15 ;;
+              missing)
+                missing=$((missing + 1))
+                if [ "$missing" -ge 8 ]; then
+                  echo "未找到提交 $GITHUB_SHA 的 CI 运行记录，中止发布。"
+                  exit 1
+                fi
+                sleep 15 ;;
+              *) echo "同一提交的 CI 结论为 $state，中止发布。"; exit 1 ;;
+            esac
+          done
+          echo "等待 CI 超时（15 分钟），中止发布。"
+          exit 1
+
+      # 不要开 merge-multiple：各目标的包里文件同名（ai2048 / simulate / SHA256SUMS ...），
+      # 合并到同一目录会互相覆盖。默认行为是每个 artifact 解压到以自身名字命名的子目录。
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ai2048-*
+          path: dist
+
+      - name: 打包
+        run: python .github/scripts/release_pack.py --dist dist --version "$version" --out out
+
+      - name: 校验压缩包清单
+        run: |
+          ls -l out
+          cd out && sha256sum -c SHA256SUMS
+
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/*.zip out/SHA256SUMS \
+            --title "ai2048 $GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes \
+            --notes "每个压缩包内含 ai2048（服务器）、simulate（自对弈基准）、train（TD 训练器）、README.md、LICENSE 与包内 SHA256SUMS。
+          - 非 Windows 目标为 .tar.gz，解包后程序已带可执行位；
+          - Android 四个目标为动态链接的可执行文件（Termux / Android 直接运行），其余 Linux 目标为纯静态二进制；
+          - 下载后请用同目录下的 SHA256SUMS 校验：\`sha256sum -c SHA256SUMS\`。
+
+          本项目以 AGPL-3.0-or-later 许可证发布。"
