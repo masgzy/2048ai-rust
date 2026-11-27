@@ -1,6 +1,6 @@
 [package]
 name = "ai2048"
-version = "2.1.0"
+version = "1.0.0-alpha.1"
 edition = "2021"
 rust-version = "1.82"
 description = "2048 AI 服务器：Rust 位棋盘 expectimax 引擎 + WebSocket，零第三方依赖"

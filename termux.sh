@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# ai2048 —— Termux（Android）一键启动/构建脚本  v2.1.0
+# ai2048 —— Termux（Android）一键启动/构建脚本  v1.0.0-alpha.1
 #
 # 2026-11 已知问题：Termux 官方 rust 包当前缺少 std 静态库（rlib），
 # 本地工程 cargo build 会报一串

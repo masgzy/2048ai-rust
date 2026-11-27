@@ -6,12 +6,13 @@
 单文件 Go 版的完全 Rust 重构：位棋盘 expectimax 引擎 + 零依赖 WebSocket 服务器 + 经典 2048 网页界面。
 **零第三方依赖**（纯 `std`），任何能装 Rust 的平台都能编译，包括 Android/Termux 与 arm64。
 
-当前版本 **v2.1.0**，许可证 **AGPL-3.0-or-later**（见[许可证](#许可证)）。
+当前版本 **v1.0.0-alpha.1**，许可证 **AGPL-3.0-or-later**（见[许可证](#许可证)）。
 服务器默认**只监听 `127.0.0.1:8080`**（仅本机可访问）；需要局域网访问时须显式配置，见[配置](#配置)。
 
 ## 性能与强度
 
-- 吞吐：**35 ~ 70M 节点/秒**（视 CPU 核数；2 核沙盒 v2.1.0 实测 `simulate --games 2` 全程平均 49.1M/s）
+- 吞吐：**35 ~ 70M 节点/秒**（视 CPU 核数；2 核沙盒实测 `simulate --games 2` 全程平均 49.1M/s；
+  GitHub 标准 runner 是 4 vCPU，应更快；自编译加 `target-cpu=native` 还能再快）
 - 强度：全自动预算（默认最高速度）下自对弈实测 **8192 达成率 2/2**（130,264 / 159,192 分，平均每局 6062 步），
   4096 常规达成
 - 移动思考预算完全自动：按空格数与局面复杂度自适应（开局 ~毫秒级，残局自动加时，实测平均每步 40ms）
@@ -130,7 +131,7 @@ bash termux.sh --build                 # 或手动：
 > LLVM 自动向量化即可利用；预编译二进制按通用 aarch64 目标出包以兼容所有机型，
 > 自编译加 `target-cpu=native` 可针对你的 SoC（骁龙/天璣/麒麟）进一步优化。
 >
-> 预编译文件为 v2.1.0 源码的构建产物，已通过 ELF 结构校验（纯静态、无解释器、aarch64），
+> 预编译文件为 v1.0.0-alpha.1 源码的构建产物，已通过 ELF 结构校验（纯静态、无解释器、aarch64），
 > 但构建环境不是 Android 手机，未在真机上运行验证；如遇问题请用方式二自行编译。
 
 ## 网页界面（经典 2048 风格）
@@ -174,7 +175,7 @@ curl -i -N --http1.1 http://127.0.0.1:8080/ws \
 服务端 → 客户端：
 
 ```json
-{"type":"hello","cores":8,"weights":"内置启发式","version":"2.1.0","engine":"rust-bitboard-expectimax"}
+{"type":"hello","cores":8,"weights":"内置启发式","version":"1.0.0-alpha.1","engine":"rust-bitboard-expectimax"}
 {"type":"move","id":7,"dir":1,"score":1489264.0,"depth":9,"nodes":3260280,"ms":105,"budget":100,"nps":31050285}
 {"type":"error","id":99,"error":"非法方块值 3（必须为 2 的幂且 <= 32768）"}
 ```
@@ -325,13 +326,13 @@ Android 必须是带 `/system/bin/linker` 的 PIE 且段对齐 ≥ 16KB，否则
 | `windows_386` | `i686-pc-windows-msvc` | 占位，未在 CI 中验证 |
 | `windows_arm64` | `aarch64-pc-windows-msvc` | 占位，未在 CI 中验证 |
 
-**发布**：推送形如 `v2.1.0` 的标签（必须等于 `v` + `Cargo.toml` 的 `version`，否则中止）后，
+**发布**：推送形如 `v1.0.0-alpha.1` 的标签（必须等于 `v` + `Cargo.toml` 的 `version`，否则中止）后，
 全部目标构建成功、且同一提交的 CI 已通过，才自动创建 GitHub Release：
 `ai2048-<版本>-<名称>.tar.gz`（Windows 为 `.zip`）与汇总的 `SHA256SUMS`。
 解包后用包内的 `SHA256SUMS` 校验：`sha256sum -c SHA256SUMS`。
 
 ```bash
-git tag v2.2.0 && git push origin v2.2.0     # 版本号以 Cargo.toml 为准
+git tag v1.0.0-alpha.1 && git push origin v1.0.0-alpha.1     # 版本号以 Cargo.toml 为准
 ```
 
 ## 相比 Go 版修复的 Bug 与优化
@@ -347,7 +348,9 @@ git tag v2.2.0 && git push origin v2.2.0     # 版本号以 Cargo.toml 为准
    去掉 chance 节点 goroutine 风暴与竞态信号量，改为 4 方向各一线程独立迭代加深。
 7. 工程：零依赖单二进制、`catch_unwind` 隔离请求 panic、WS 分片/ping/close 全处理。
 
-## v2.1.0 变更
+## v1.0.0-alpha.1 变更
+
+即首个发布版，相对随包的 v2.0.1：
 
 安全加固（v2.0.1 的实际行为 → 现在）：
 
