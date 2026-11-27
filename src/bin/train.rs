@@ -10,12 +10,21 @@
 //!
 //! 产出 weights.json，ai2048 服务器启动时自动加载。
 //!
-//! 用法：
-//!   train [--games 1000] [--alpha 0.001] [--eps 0.05]
-//!         [--out weights.json] [--resume weights.json] [--seed 1]
+//! 运行 `train --help` 查看全部参数。
 
 use ai2048::board::{self, MoveTables, Rng};
 use ai2048::engine;
+
+const USAGE: &str = "\
+用法: train [选项]
+  --games N        训练局数（默认 1000）
+  --alpha X        学习率（默认 0.001）
+  --eps X          ε-greedy 探索概率（默认 0.05）
+  --out PATH       权重输出文件（默认 weights.json）
+  --resume PATH    从已有权重文件继续训练（解析失败则从头开始）
+  --seed N         随机种子（默认 1）
+  --version, -V    显示版本
+  --help, -h       显示本帮助";
 
 struct Value {
     w: Vec<f32>,
@@ -23,7 +32,9 @@ struct Value {
 
 impl Value {
     fn new() -> Self {
-        Value { w: vec![0f32; 65536] }
+        Value {
+            w: vec![0f32; 65536],
+        }
     }
 
     fn from_json(path: &str) -> Result<Self, String> {
@@ -119,11 +130,23 @@ fn main() {
             "--out" => out = args.next().unwrap_or_else(|| "weights.json".into()),
             "--resume" => resume = args.next(),
             "--seed" => seed = args.next().and_then(|v| v.parse().ok()).unwrap_or(1),
-            other => {
-                eprintln!("未知参数 {}", other);
+            "--version" | "-V" => {
+                println!("train {}（ai2048）", env!("CARGO_PKG_VERSION"));
                 return;
             }
+            "--help" | "-h" => {
+                println!("{}", USAGE);
+                return;
+            }
+            other => {
+                eprintln!("未知参数 {}\n\n{}", other, USAGE);
+                std::process::exit(2);
+            }
         }
+    }
+    if games == 0 {
+        eprintln!("--games 必须大于 0\n\n{}", USAGE);
+        std::process::exit(2);
     }
 
     let t = MoveTables::new();
@@ -175,8 +198,7 @@ fn main() {
             let target = if next.is_empty() {
                 gained as f32 // 死局：没有未来价值
             } else {
-                gained as f32
-                    + next.iter().map(|c| c.3).fold(f32::NEG_INFINITY, f32::max)
+                gained as f32 + next.iter().map(|c| c.3).fold(f32::NEG_INFINITY, f32::max)
             };
             let delta = target - q_as;
             v.update(after, delta, alpha);

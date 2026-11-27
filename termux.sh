@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# ai2048 —— Termux（Android）一键启动/构建脚本  v2.0.1
+# ai2048 —— Termux（Android）一键启动/构建脚本  v2.1.0
 #
 # 2026-11 已知问题：Termux 官方 rust 包当前缺少 std 静态库（rlib），
 # 本地工程 cargo build 会报一串
@@ -13,6 +13,7 @@ set -e
 cd "$(dirname "$0")"
 
 PORT="${PORT:-8080}"
+HOST="${HOST:-127.0.0.1}"
 ARCH="$(uname -m)"
 PREBUILT="prebuilt/ai2048-android-$ARCH"
 
@@ -51,6 +52,6 @@ echo "==> 申请休眠锁（防止息屏后系统杀进程）"
 termux-wake-lock 2>/dev/null || true
 
 echo "==> 启动：手机浏览器打开 http://127.0.0.1:$PORT/"
-echo "    局域网访问：ifconfig wlan0 查看手机 IP，电脑打开 http://<手机IP>:$PORT/"
+echo "    局域网访问：先 HOST=0.0.0.0 bash termux.sh，再 ifconfig wlan0 查手机 IP"
 echo "    停止：按 Ctrl+C，或运行 termux-wake-unlock"
-exec "$BIN" --port "$PORT"
+exec "$BIN" --host "$HOST" --port "$PORT"

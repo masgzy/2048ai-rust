@@ -1,3 +1,7 @@
 /target
 weights.json
 *.log
+# 本地配置文件（含个人环境定制，不入库；模板见 config.example.json）
+config.json
+# Python 字节码缓存（.github/scripts 被本地导入时产生）
+__pycache__/

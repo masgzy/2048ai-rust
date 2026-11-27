@@ -12,7 +12,6 @@
 
 use std::cell::Cell;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -94,7 +93,14 @@ pub struct TTGuard<'a> {
 
 impl<'a> TTGuard<'a> {
     pub fn take(pool: &'a TTPool) -> Self {
-        let tt = pool.free.lock().unwrap().pop().unwrap_or_else(TT::new);
+        // 锁中毒恢复：TT 只是缓存，哪怕持锁线程曾 panic 也照常取用，
+        // 否则一次 panic 会让之后所有请求永久失败（服务雪崩）。
+        let tt = pool
+            .free
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop()
+            .unwrap_or_else(TT::new);
         TTGuard { pool, tt: Some(tt) }
     }
 }
@@ -115,7 +121,7 @@ impl DerefMut for TTGuard<'_> {
 impl Drop for TTGuard<'_> {
     fn drop(&mut self) {
         if let Some(tt) = self.tt.take() {
-            let mut f = self.pool.free.lock().unwrap();
+            let mut f = self.pool.free.lock().unwrap_or_else(|e| e.into_inner());
             if f.len() < 32 {
                 f.push(tt);
             }
@@ -264,7 +270,14 @@ pub fn choose_move(
     }
     if root_moves.len() == 1 {
         let dir = root_moves[0].0;
-        return Ok(MoveResult { dir, score: 0.0, depth: 0, nodes: 0, ms: 0, budget_ms: 0 });
+        return Ok(MoveResult {
+            dir,
+            score: 0.0,
+            depth: 0,
+            nodes: 0,
+            ms: 0,
+            budget_ms: 0,
+        });
     }
 
     let auto = auto_budget(board);
@@ -274,10 +287,10 @@ pub fn choose_move(
     // 自适应深度上限（nneonneo 式）：distinct_tiles - 2，最少 3 层；时间预算仍是硬闸
     let depth_cap = ((board::count_distinct(board).saturating_sub(2)).max(3) as u8).min(max_depth);
 
-    let results: Mutex<Vec<(u8, f32, u8)>> = Mutex::new(Vec::new());
-    let nodes_total = AtomicU64::new(0);
+    // 各根着法线程把 (方向, 分值, 完成深度, 节点数) 写入同一个 Vec；节点数随结果一起收集，
+    // join 之后再求和——不依赖 AtomicU64（ARMv5 等目标没有 64 位原子操作）。
+    let results: Mutex<Vec<(u8, f32, u8, u64)>> = Mutex::new(Vec::new());
     let results = &results;
-    let nodes_total = &nodes_total;
 
     std::thread::scope(|s| {
         for &(dir, nb) in &root_moves {
@@ -305,25 +318,36 @@ pub fn choose_move(
                         break;
                     }
                 }
-                nodes_total.fetch_add(ctx.nodes.get(), Ordering::Relaxed);
-                results.lock().unwrap().push((dir, best.0, best.1));
+                results.lock().unwrap_or_else(|e| e.into_inner()).push((
+                    dir,
+                    best.0,
+                    best.1,
+                    ctx.nodes.get(),
+                ));
             });
         }
     });
 
-    let list = (*results.lock().unwrap()).clone();
-    let nodes = nodes_total.load(Ordering::Relaxed);
+    let list = (*results.lock().unwrap_or_else(|e| e.into_inner())).clone();
+    let nodes = list.iter().map(|r| r.3).sum::<u64>();
     let ms = start.elapsed().as_millis() as u64;
-    let &(dir, score, depth) = list
+    let &(dir, score, depth, _) = list
         .iter()
         .max_by(|a, b| {
             a.1.partial_cmp(&b.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(a.2.cmp(&b.2))
         })
-        .unwrap_or(&(0, 0.0, 0));
+        .unwrap_or(&(0, 0.0, 0, 0));
 
-    Ok(MoveResult { dir, score, depth, nodes, ms, budget_ms: budget })
+    Ok(MoveResult {
+        dir,
+        score,
+        depth,
+        nodes,
+        ms,
+        budget_ms: budget,
+    })
 }
 
 /// 无头对局（simulate 用）：完整打一局，返回统计。
@@ -348,20 +372,21 @@ pub fn play_game(
         b = spawn_tile(b, rng);
     }
     let (mut score, mut moves, mut nodes, mut ms) = (0u64, 0u64, 0u64, 0u64);
-    loop {
-        match choose_move(pool, t, ev, b, min_ms, max_depth) {
-            Ok(r) => {
-                let (nb, gained, _) = t.move_board(b, r.dir as usize);
-                score += gained as u64;
-                nodes += r.nodes;
-                ms += r.ms;
-                moves += 1;
-                b = spawn_tile(nb, rng);
-            }
-            Err(_) => break,
-        }
+    while let Ok(r) = choose_move(pool, t, ev, b, min_ms, max_depth) {
+        let (nb, gained, _) = t.move_board(b, r.dir as usize);
+        score += gained as u64;
+        nodes += r.nodes;
+        ms += r.ms;
+        moves += 1;
+        b = spawn_tile(nb, rng);
     }
-    GameOutcome { score, max_rank: board::max_rank(b), moves, nodes, ms }
+    GameOutcome {
+        score,
+        max_rank: board::max_rank(b),
+        moves,
+        nodes,
+        ms,
+    }
 }
 
 /// 随机生成一个块（90% 出 2，10% 出 4）。

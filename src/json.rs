@@ -12,7 +12,10 @@ pub enum Json {
 
 impl Json {
     pub fn parse(s: &str) -> Result<Json, String> {
-        let mut p = Parser { b: s.as_bytes(), i: 0 };
+        let mut p = Parser {
+            b: s.as_bytes(),
+            i: 0,
+        };
         p.ws();
         let v = p.value(0)?;
         p.ws();
@@ -93,9 +96,7 @@ struct Parser<'a> {
 
 impl Parser<'_> {
     fn ws(&mut self) {
-        while self.i < self.b.len()
-            && matches!(self.b[self.i], b' ' | b'\t' | b'\n' | b'\r')
-        {
+        while self.i < self.b.len() && matches!(self.b[self.i], b' ' | b'\t' | b'\n' | b'\r') {
             self.i += 1;
         }
     }

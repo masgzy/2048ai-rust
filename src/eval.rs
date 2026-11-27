@@ -50,7 +50,12 @@ pub struct Eval {
 }
 
 fn heur_row(row: u16, w: &Weights) -> f32 {
-    let line = [nibble(row, 0), nibble(row, 1), nibble(row, 2), nibble(row, 3)];
+    let line = [
+        nibble(row, 0),
+        nibble(row, 1),
+        nibble(row, 2),
+        nibble(row, 3),
+    ];
     let mut sum = 0.0f32;
     let (mut empty, mut merges) = (0i32, 0i32);
     let (mut prev, mut counter) = (0u16, 0i32);
@@ -91,7 +96,10 @@ impl Eval {
         for row in 0..=65535u32 {
             heur[row as usize] = heur_row(row as u16, w);
         }
-        Eval { heur, kind: EvalKind::Builtin }
+        Eval {
+            heur,
+            kind: EvalKind::Builtin,
+        }
     }
 
     /// 从 TD 权重直接构造（值越大越好，符号不限）。
@@ -99,7 +107,10 @@ impl Eval {
         if table.len() != 65536 {
             return None;
         }
-        Some(Eval { heur: table, kind: EvalKind::TD })
+        Some(Eval {
+            heur: table,
+            kind: EvalKind::TD,
+        })
     }
 
     /// 整盘评估：4 行 + 4 列（转置后）共 8 次查表。
@@ -126,8 +137,7 @@ impl Eval {
 /// 从 `weights.json` 加载 TD 权重表。
 /// 期望格式：{"magic":"ai2048-td","games":N,"table":[65536 个数]}
 pub fn load_file(path: &str) -> Result<Eval, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("读取 {} 失败: {}", path, e))?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {}", path, e))?;
     let j = Json::parse(&text).map_err(|e| format!("{} 不是合法 JSON: {}", path, e))?;
     let magic = j.get("magic").and_then(|v| v.as_str()).unwrap_or("");
     if magic != "ai2048-td" {
@@ -138,9 +148,16 @@ pub fn load_file(path: &str) -> Result<Eval, String> {
         .and_then(|v| v.as_arr())
         .ok_or_else(|| format!("{} 缺少 table 数组", path))?;
     if arr.len() != 65536 {
-        return Err(format!("{} 的 table 长度应为 65536，实际 {}", path, arr.len()));
+        return Err(format!(
+            "{} 的 table 长度应为 65536，实际 {}",
+            path,
+            arr.len()
+        ));
     }
-    let table: Vec<f32> = arr.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect();
+    let table: Vec<f32> = arr
+        .iter()
+        .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+        .collect();
     Eval::from_td_table(table).ok_or_else(|| "table 长度错误".to_string())
 }
 
@@ -160,9 +177,9 @@ mod tests {
     #[test]
     fn eval_symmetric_rows_and_cols() {
         let ev = Eval::build(&Weights::default());
-        // 单块 2：位于 (0,0) 与转置位置 (0,0)→(0,0)；验证 (1,2) 与 (2,1) 等价
-        let b1 = board::set_nibble(0, 4 * 1 + 2, 1);
-        let b2 = board::set_nibble(0, 4 * 2 + 1, 1);
+        // 单块 2：验证 (1,2) 与 (2,1) 转置等价（nibble 序号 4r+c）
+        let b1 = board::set_nibble(0, 6, 1); // 4*1+2
+        let b2 = board::set_nibble(0, 9, 1); // 4*2+1
         assert_eq!(ev.eval(b1), ev.eval(b2));
     }
 }

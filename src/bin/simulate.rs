@@ -1,12 +1,21 @@
 //! simulate —— 无头自对弈基准：验证引擎强度、测量节点/秒。
 //!
-//! 用法：
-//!   simulate [--games 10] [--min-ms 0] [--max-depth 8] [--seed 1]
-//! min_ms = 0 表示全自动思考预算（与网页默认一致）。
+//! 运行 `simulate --help` 查看全部参数。min_ms = 0 表示全自动思考预算（与网页默认一致）。
 
 use ai2048::board::{MoveTables, Rng};
 use ai2048::engine::{self, TTPool};
 use ai2048::eval::{Eval, Weights};
+
+const USAGE: &str = "\
+用法: simulate [选项]
+  --games N        对局数（默认 10）
+  --min-ms N       每步最少思考毫秒数，0 表示全自动预算（与网页默认一致）
+  --max-depth N    搜索深度上限（默认 12，正常无需调整）
+  --seed N         随机种子（默认 1）
+  --ref-depth N    大于 0 时改用纯递归 expectimax 走固定 N 层（定位引擎差异用）
+  --weights PATH   TD 学习权重文件，不存在则用内置权重（默认 weights.json）
+  --version, -V    显示版本
+  --help, -h       显示本帮助";
 
 fn main() {
     let mut games = 10u64;
@@ -20,15 +29,28 @@ fn main() {
         match a.as_str() {
             "--games" => games = args.next().and_then(|v| v.parse().ok()).unwrap_or(10),
             "--min-ms" => min_ms = args.next().and_then(|v| v.parse().ok()).unwrap_or(0),
-            "--max-depth" => max_depth = args.next().and_then(|v| v.parse().ok()).unwrap_or(8),
+            "--max-depth" => max_depth = args.next().and_then(|v| v.parse().ok()).unwrap_or(12),
             "--seed" => seed = args.next().and_then(|v| v.parse().ok()).unwrap_or(1),
             "--ref-depth" => ref_depth_arg = args.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             "--weights" => weights_path = args.next().unwrap_or_else(|| "weights.json".into()),
-            other => {
-                eprintln!("未知参数 {}", other);
+            "--version" | "-V" => {
+                println!("simulate {}（ai2048）", env!("CARGO_PKG_VERSION"));
                 return;
             }
+            "--help" | "-h" => {
+                println!("{}", USAGE);
+                return;
+            }
+            other => {
+                eprintln!("未知参数 {}\n\n{}", other, USAGE);
+                std::process::exit(2);
+            }
         }
+    }
+
+    if games == 0 {
+        eprintln!("--games 必须大于 0\n\n{}", USAGE);
+        std::process::exit(2);
     }
 
     let tables = MoveTables::new();
@@ -92,7 +114,7 @@ fn main() {
             let (nb, _, m) = t.move_board(b, dir as usize);
             if m {
                 let v = ref_chance(t, ev, nb, depth.saturating_sub(1), 1.0);
-                if best.map_or(true, |(_, bv)| v > bv) {
+                if best.is_none_or(|(_, bv)| v > bv) {
                     best = Some((dir, v));
                 }
             }
@@ -102,7 +124,8 @@ fn main() {
 
     let (mut sum, mut best) = (0u64, 0u64);
     let (mut n2048, mut n4096, mut n8192) = (0u64, 0u64, 0u64);
-    let (mut nodes, mut ms, mut moves) = (0u64, 0u64, 0u64);
+    // 全部对局累计（此前误用"最后一局的值"做汇总统计）
+    let (mut tot_nodes, mut tot_ms, mut tot_moves) = (0u64, 0u64, 0u64);
     let mut hist: [u64; 16] = [0; 16];
 
     for g in 1..=games {
@@ -110,12 +133,16 @@ fn main() {
         for _ in 0..2 {
             b = engine::spawn_tile(b, &mut rng);
         }
-        let (mut score, mut gscore) = (0u64, 0u64);
-        let (mut gnodes, mut gms, mut gmoves) = (0u64, 0u64, 0u64);
+        let (mut gscore, mut gnodes, mut gms, mut gmoves) = (0u64, 0u64, 0u64, 0u64);
         loop {
             let picked = if ref_depth > 0 {
-                ref_choose(&tables, &ev, b, ref_depth).map(|dir| {
-                    engine::MoveResult { dir, score: 0.0, depth: ref_depth, nodes: 0, ms: 0, budget_ms: 0 }
+                ref_choose(&tables, &ev, b, ref_depth).map(|dir| engine::MoveResult {
+                    dir,
+                    score: 0.0,
+                    depth: ref_depth,
+                    nodes: 0,
+                    ms: 0,
+                    budget_ms: 0,
                 })
             } else {
                 engine::choose_move(&pool, &tables, &ev, b, min_ms, max_depth).ok()
@@ -138,12 +165,20 @@ fn main() {
                 None => break,
             }
         }
-        let max_rank = (0..16).map(|i| ai2048::board::nibble_at(b, i)).max().unwrap_or(0);
-        score = gscore;
-        moves = gmoves;
-        nodes = gnodes;
-        ms = gms;
-        let o = engine::GameOutcome { score, max_rank, moves, nodes, ms };
+        let max_rank = (0..16)
+            .map(|i| ai2048::board::nibble_at(b, i))
+            .max()
+            .unwrap_or(0);
+        tot_nodes += gnodes;
+        tot_ms += gms;
+        tot_moves += gmoves;
+        let o = engine::GameOutcome {
+            score: gscore,
+            max_rank,
+            moves: gmoves,
+            nodes: gnodes,
+            ms: gms,
+        };
         sum += o.score;
         best = best.max(o.score);
         hist[o.max_rank as usize] += 1;
@@ -165,19 +200,22 @@ fn main() {
         );
     }
 
-    let nps = if ms > 0 { nodes * 1000 / ms.max(1) } else { 0 };
+    let nps = (tot_nodes * 1000).checked_div(tot_ms).unwrap_or(0);
     println!("================ 汇总 ================");
     println!(
         "平均分 {:.0}   最高分 {}   平均步数 {:.0}",
         sum as f64 / games as f64,
         best,
-        moves as f64 / games as f64
+        tot_moves as f64 / games as f64
     );
-    println!("达成率: 2048={}/{}  4096={}/{}  8192={}/{}", n2048, games, n4096, games, n8192, games);
+    println!(
+        "达成率: 2048={}/{}  4096={}/{}  8192={}/{}",
+        n2048, games, n4096, games, n8192, games
+    );
     println!(
         "吞吐:   平均 {} 节点/秒，平均每步 {} ms",
         nps,
-        if moves > 0 { ms / moves } else { 0 }
+        tot_ms.checked_div(tot_moves).unwrap_or(0)
     );
     print!("最高块分布:");
     for (rank, c) in hist.iter().enumerate() {

@@ -181,13 +181,14 @@ impl Default for MoveTables {
 
 #[inline]
 pub fn count_empty(b: u64) -> u32 {
-    let mut n = 0;
-    for i in 0..16 {
-        if nibble_at(b, i) == 0 {
-            n += 1;
-        }
-    }
-    n
+    // 位技巧：先把每个 nibble 的 4 个位"或"进各自的 bit0（b|b>>1|b>>2|b>>3，
+    // 跨 nibble 的移位污染只落在高位，最后会被 ONES 掩掉），
+    // 得到"每 nibble 非空 → bit0=1"；再用 0x1111… 做无借位减法
+    // （被减数每 nibble 恰为 1 ≥ 减数），空 nibble 位变 1、非空变 0，popcount 即空格数。
+    // 这是 chance_node 的热路径（每个机会节点调用一次），7 条指令替代 16 次循环。
+    const ONES: u64 = 0x1111_1111_1111_1111;
+    let t = b | (b >> 1) | (b >> 2) | (b >> 3);
+    (ONES.wrapping_sub(t & ONES) & ONES).count_ones()
 }
 
 #[inline]
@@ -218,9 +219,8 @@ pub fn count_distinct(b: u64) -> u32 {
 /// 从 4x4 实际牌值数组构造位棋盘（带校验：必须为 2 的幂且 <= 32768）。
 pub fn from_array(arr: &[[u32; 4]; 4]) -> Result<u64, String> {
     let mut b = 0u64;
-    for r in 0..4 {
-        for c in 0..4 {
-            let v = arr[r][c];
+    for (r, row) in arr.iter().enumerate() {
+        for (c, &v) in row.iter().enumerate() {
             if v == 0 {
                 continue;
             }
@@ -236,10 +236,10 @@ pub fn from_array(arr: &[[u32; 4]; 4]) -> Result<u64, String> {
 /// 位棋盘还原为 4x4 实际牌值数组。
 pub fn to_array(b: u64) -> [[u32; 4]; 4] {
     let mut arr = [[0u32; 4]; 4];
-    for r in 0..4 {
-        for c in 0..4 {
+    for (r, row) in arr.iter_mut().enumerate() {
+        for (c, cell) in row.iter_mut().enumerate() {
             let rank = nibble_at(b, 4 * r + c);
-            arr[r][c] = if rank == 0 { 0 } else { 1u32 << rank };
+            *cell = if rank == 0 { 0 } else { 1u32 << rank };
         }
     }
     arr
@@ -265,7 +265,7 @@ impl Rng {
     }
 
     #[inline]
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         let mut x = self.s;
         x ^= x >> 12;
         x ^= x << 25;
@@ -279,7 +279,7 @@ impl Rng {
         if n == 0 {
             0
         } else {
-            self.next() % n
+            self.next_u64() % n
         }
     }
 }
@@ -352,12 +352,27 @@ mod tests {
 
     fn grid_to_board(g: &[[u16; 4]; 4]) -> u64 {
         let mut b = 0u64;
-        for r in 0..4 {
-            for c in 0..4 {
-                b = set_nibble(b, 4 * r + c, g[r][c]);
+        for (r, row) in g.iter().enumerate() {
+            for (c, &rank) in row.iter().enumerate() {
+                b = set_nibble(b, 4 * r + c, rank);
             }
         }
         b
+    }
+
+    #[test]
+    fn count_empty_matches_naive() {
+        let mut rng = Rng::new(99);
+        for _ in 0..2000 {
+            let mut b = 0u64;
+            for i in 0..16 {
+                b = set_nibble(b, i, (rng.next_u64() % 16) as u16);
+            }
+            let naive = (0..16).filter(|&i| nibble_at(b, i) == 0).count() as u32;
+            assert_eq!(count_empty(b), naive, "board={:016x}", b);
+        }
+        assert_eq!(count_empty(0), 16);
+        assert_eq!(count_empty(u64::MAX), 0);
     }
 
     #[test]
@@ -366,7 +381,7 @@ mod tests {
         for _ in 0..1000 {
             let mut b = 0u64;
             for i in 0..16 {
-                b = set_nibble(b, i, (rng.next() % 16) as u16);
+                b = set_nibble(b, i, (rng.next_u64() % 16) as u16);
             }
             assert_eq!(transpose(b), transpose_naive(b));
         }
@@ -391,9 +406,9 @@ mod tests {
         // 测试盘面 rank 限制在 0..=14：两个 32768（rank15）合并会溢出 nibble，真实对局不可达
         for _ in 0..500 {
             let mut g = [[0u16; 4]; 4];
-            for r in 0..4 {
-                for c in 0..4 {
-                    g[r][c] = (rng.next() % 15) as u16;
+            for row in g.iter_mut() {
+                for rank in row.iter_mut() {
+                    *rank = (rng.next_u64() % 15) as u16;
                 }
             }
             let b = grid_to_board(&g);
@@ -420,7 +435,12 @@ mod tests {
 
     #[test]
     fn array_roundtrip() {
-        let arr = [[2u32, 0, 4, 8], [0, 1024, 0, 32768], [2, 2, 2, 2], [0, 0, 0, 65536 >> 1]];
+        let arr = [
+            [2u32, 0, 4, 8],
+            [0, 1024, 0, 32768],
+            [2, 2, 2, 2],
+            [0, 0, 0, 65536 >> 1],
+        ];
         let b = from_array(&arr).unwrap();
         let back = to_array(b);
         assert_eq!(arr, back);
