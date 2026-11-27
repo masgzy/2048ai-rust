@@ -1,13 +1,64 @@
-# ai2048 —— Rust 版 2048 AI 服务器
+<div align="center">
+
+# ai2048
+
+**Rust 版 2048 AI 服务器** —— 位棋盘 expectimax 引擎 + 零依赖 WebSocket 服务器 + 经典 2048 网页界面
 
 [![CI](https://github.com/masgzy/2048ai-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/masgzy/2048ai-rust/actions/workflows/ci.yml)
 [![Build](https://github.com/masgzy/2048ai-rust/actions/workflows/build.yml/badge.svg)](https://github.com/masgzy/2048ai-rust/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/masgzy/2048ai-rust?include_prereleases&sort=semver)](https://github.com/masgzy/2048ai-rust/releases)
+[![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.82%2B-orange?logo=rust)](Cargo.toml)
+[![Dependencies](https://img.shields.io/badge/dependencies-none-success)](Cargo.toml)
+[![Lines](https://img.shields.io/badge/lines_of_Rust-~3k-informational)](src/)
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20android%20%7C%20arm64-lightgrey)](#下载预编译二进制)
 
-单文件 Go 版的完全 Rust 重构：位棋盘 expectimax 引擎 + 零依赖 WebSocket 服务器 + 经典 2048 网页界面。
-**零第三方依赖**（纯 `std`），任何能装 Rust 的平台都能编译，包括 Android/Termux 与 arm64。
+**[特性](#特性) · [快速开始](#快速开始桌面) · [下载安装](#下载预编译二进制) · [配置](#配置) · [协议](#websocket-协议wsjson-文本帧) · [参与贡献](#参与贡献) · [Changelog](CHANGELOG.md)**
 
-当前版本 **v1.0.0-alpha.1**，许可证 **AGPL-3.0-or-later**（见[许可证](#许可证)）。
-服务器默认**只监听 `127.0.0.1:8080`**（仅本机可访问）；需要局域网访问时须显式配置，见[配置](#配置)。
+</div>
+
+---
+
+单文件 Go 版的完全 Rust 重构。**零第三方依赖**（纯 `std`），任何能装 Rust 的平台都能编译，
+包括 Android/Termux 与 arm64。当前版本 **v1.0.0-alpha.1**（见 [CHANGELOG](CHANGELOG.md)）。
+
+![网页界面](docs/screenshot.png)
+
+## 特性
+
+- **强**：位棋盘 + 置换表 + 迭代加深的 expectimax，方向级并行；自对弈 8192 达成率 2/2（详见[性能与强度](#性能与强度)）
+- **快**：35 ~ 70M 节点/秒（视核数），思考预算全自动（开局毫秒级、残局自动加时，实测平均每步 40ms）
+- **零依赖**：`Cargo.toml` 没有一个 `[dependencies]`——HTTP/WebSocket/SHA1/base64/JSON 全部手写，
+  供应链攻击面为零，`cargo audit` 永远安静
+- **单文件**：服务器是一个静态二进制，网页界面内嵌其中，无前端构建步骤
+- **安全默认**：只监听 `127.0.0.1:8080`，WebSocket 同源校验，请求头/消息长度/连接数/超时全部设限
+- **可训练**：内置 TD(0) 自博弈强化学习器（`train`）与无头基准工具（`simulate`）
+- **跨平台**：CI 构建并校验 Linux（musl 静态）/ Windows / Android（4 ABI，16KB 页对齐）等 6 个目标
+
+## 目录
+
+<!-- toc -->
+
+- [特性](#特性)
+- [性能与强度](#性能与强度)
+- [快速开始](#快速开始桌面)
+- [下载预编译二进制](#下载预编译二进制)
+- [配置](#配置)
+- [Termux（Android 手机）部署](#termuxandroid-手机部署)
+- [网页界面（经典 2048 风格）](#网页界面经典-2048-风格)
+- [WebSocket 协议（/ws，JSON 文本帧）](#websocket-协议wsjson-文本帧)
+- [安全边界](#安全边界)
+- [强化学习（TD 训练器）](#强化学习td-训练器)
+- [基准工具](#基准工具)
+- [项目结构](#项目结构)
+- [持续集成与构建（GitHub Actions）](#持续集成与构建github-actions)
+- [相比 Go 版修复的 Bug 与优化](#相比-go-版修复的-bug-与优化)
+- [参与贡献](#参与贡献)
+- [许可证](#许可证)
+- [致谢](#致谢)
+
+<!-- /toc -->
+
 
 ## 性能与强度
 
@@ -33,7 +84,34 @@ cargo build --release          # 需要 Rust 1.82 或更高版本
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
+## 下载预编译二进制
+
+从 [Releases](https://github.com/masgzy/2048ai-rust/releases) 下载对应平台的压缩包，
+每个包内含 `ai2048`（服务器）、`simulate`（基准）、`train`（训练器）、README、LICENSE 与 `SHA256SUMS`。
+
+| 平台 | 文件（v1.0.0-alpha.1） | 形态 |
+| --- | --- | --- |
+| Linux x86_64 | `ai2048-1.0.0-alpha.1-linux_amd64.tar.gz` | musl 纯静态，任何发行版直接跑 |
+| Windows x64 | `ai2048-1.0.0-alpha.1-windows_amd64.zip` | `ai2048.exe` |
+| Android arm64（Termux） | `ai2048-1.0.0-alpha.1-android_arm64.tar.gz` | bionic 动态链接，16KB 页对齐 |
+| Android armv7 | `ai2048-1.0.0-alpha.1-android_armv7.tar.gz` | 同上 |
+| Android x86 / x86-64 | `ai2048-1.0.0-alpha.1-android_x86[_-64].tar.gz` | 同上（模拟器） |
+
+```bash
+tar xzf ai2048-1.0.0-alpha.1-linux_amd64.tar.gz
+cd ai2048-1.0.0-alpha.1-linux_amd64
+sha256sum -c SHA256SUMS          # 校验完整性
+./ai2048                          # 默认监听 127.0.0.1:8080
+```
+
+> 每次推送 `main` 也会产出 CI 构建产物（[Actions](https://github.com/masgzy/2048ai-rust/actions/workflows/build.yml)，
+> 保留 14 天），与 Release 同源同校验，只是没有版本号命名。
+> 需要 musl 之外的 Linux 架构（armv5/armv6/armv7/arm64/386）或针对性优化（`target-cpu=native`）时，
+> 从源码编译只需一条 `cargo build --release`（零依赖，无需任何交叉工具链）。
+
 ## 配置
+
+服务器默认**只监听 `127.0.0.1:8080`**（仅本机可访问）；需要局域网访问时须显式配置（见本节末尾的安全提示）。
 
 命令行选项（`ai2048 --help`）：
 
@@ -256,14 +334,17 @@ cargo run --release --bin simulate -- --games 4 --seed 99
 ```text
 2048ai-rust/
 ├── Cargo.toml              # 零依赖；release: LTO + codegen-units=1 + strip；MSRV 1.82
+├── CHANGELOG.md            # 变更日志（Keep a Changelog 风格）
 ├── config.example.json     # 配置文件模板（复制为 config.json 后按需修改，config.json 不入库）
 ├── termux.sh               # Android 一键启动（默认用预编译版，--build 源码编译）
 ├── prebuilt/               # aarch64 纯静态预编译二进制（Termux 直接跑）
+├── docs/                   # 文档资源（界面截图等）
 ├── THIRD_PARTY_NOTICES.md  # 第三方 MIT 许可声明
 ├── .github/
 │   ├── workflows/
 │   │   ├── ci.yml          # rustfmt / clippy / MSRV / 测试（Linux + Windows）/ 冒烟
 │   │   └── build.yml       # 交叉编译矩阵 + ELF 校验 + 打包 + Release
+│   ├── releases/           # 按版本存放的 release note（build.yml 发布时使用）
 │   └── scripts/            # check_elf.py / smoke.py / package.py / release_pack.py / android_linker.py
 └── src/
     ├── lib.rs
@@ -337,51 +418,19 @@ git tag v1.0.0-alpha.1 && git push origin v1.0.0-alpha.1     # 版本号以 Carg
 
 ## 相比 Go 版修复的 Bug 与优化
 
-1. **致命搜索错误**：机会节点期望值未对空格数取平均，导致“移动后空格多”的方向被
-   系统性放大 ×empties，搜索退化为抢空格 → 长期卡在 1024。已对齐 nneonneo 原版
-   （`res / num_open`），修复后 8192 稳定达成。
-2. 深度上限改为自适应 `distinct_tiles − 2`（原为固定 8，中局浪费、残局不足）。
-3. 输入校验：4x4 形状、2 的幂、≤32768 全量校验，非法输入返回 error 而非 panic/越界。
-4. 超时污染：deadline 后产生的半成品值不再写入置换表。
-5. TT 语义：按“已搜深度 ≥ 所需深度”命中，深结果优先保留（原实现同盘面不同深度互相驱逐）。
-6. 分配与并发：TT 对象池复用（搜索期零分配，原版每分支新建 5×65536 切片）；
-   去掉 chance 节点 goroutine 风暴与竞态信号量，改为 4 方向各一线程独立迭代加深。
-7. 工程：零依赖单二进制、`catch_unwind` 隔离请求 panic、WS 分片/ping/close 全处理。
+完整清单（7 项算法/工程修复 + 12 项安全加固 + 7 项缺陷修复）见
+[CHANGELOG.md](CHANGELOG.md#v100-alpha1---2026-11-27)，其中算法侧最重要的一个是：
+机会节点期望值未对空格数取平均，导致搜索系统性偏向"抢空格"，长期卡在 1024；
+修复后 8192 稳定达成。
 
-## v1.0.0-alpha.1 变更
+## 参与贡献
 
-即首个发布版，相对随包的 v2.0.1：
+欢迎 issue 与 PR。开发约定：
 
-安全加固（v2.0.1 的实际行为 → 现在）：
-
-1. 默认监听 `0.0.0.0` → **`127.0.0.1:8080`**，并支持 `config.json`（见[配置](#配置)）。
-2. WebSocket 升级不做同源校验，任意公网页面都能驱动本机引擎 → 增加 `Origin` 校验（见[安全边界](#安全边界)）。
-3. 不校验 `Sec-WebSocket-Version`、不要求 `Connection: Upgrade`，`/ws` 不带升级头时回 `404` →
-   分别回 `400` 并说明原因。
-4. 客户端未掩码的帧照常处理 → 按 RFC 6455 直接断开；补齐控制帧与分片累计长度校验。
-5. 请求头没有总长上限、也没有总时限（慢速滴字节可长期占用线程）→ 16KB / 64 行 / 15 秒总时限。
-6. 没有并发连接上限，线程创建失败时额度不归还 → 默认 256，RAII 归还；写超时 30 秒；
-   WebSocket 阶段空闲超时可配。
-7. 非 `GET` 方法回 `404` → `405` + `Allow: GET`；读超时后的残缺请求不再被当作完整请求处理。
-
-缺陷修复：
-
-1. `simulate` 的汇总统计（平均节点/秒、平均每步耗时、平均步数）误用“最后一局”的值 → 改为全部对局累计。
-2. TT 对象池的锁一旦中毒（某次引擎线程 panic），之后所有请求永久失败 → 从中毒锁中恢复。
-3. `simulate` / `train` 遇到未知参数只打印一行就继续运行、退出码为 0 → 打印用法并退出码 2；
-   `--games 0` 同样报错；两者补上 `--version` / `--help`。
-4. `simulate --max-depth` 的回退值是 8，与文档和默认值 12 不一致 → 统一为 12。
-5. `Cargo.toml` 的 `license` 写的是 MIT，而仓库 `LICENSE` 是 AGPL v3 → 统一为 `AGPL-3.0-or-later`，
-   页脚常驻许可证与源码地址，附 `THIRD_PARTY_NOTICES.md`。
-
-优化与工程：
-
-1. `count_empty`（机会节点热路径）由 16 次循环改为位技巧的 7 条指令，并与朴素实现对拍测试。
-2. 去掉搜索中的 `AtomicU64` 累加（节点数随结果一起收集），同时解除对 64 位原子操作的依赖，
-   `linux_armv5` 等目标得以编译。
-3. release 配置加 `strip = "symbols"`：aarch64 三个二进制缩小 23% ~ 26%。
-4. `cargo fmt` 全量格式化，clippy 零警告；单元测试 38 项（库）+ 5 项（服务器配置），
-   新增同源校验、连接上限、慢速请求头、WebSocket 阶段不受请求头时限影响等回归测试。
+- `cargo fmt --all && cargo clippy --all-targets --locked -- -D warnings` 必须零警告（CI 强制）
+- 新增逻辑请附带单元测试；涉及 HTTP/WebSocket 行为的改动请同步更新 `.github/scripts/smoke.py`
+- 保持零第三方依赖：能用 `std` 实现的就不引 crate
+- 提交信息用中文，一行说清"改了什么、为什么"
 
 ## 许可证
 
