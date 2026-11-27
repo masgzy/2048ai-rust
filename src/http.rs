@@ -252,6 +252,10 @@ fn handle_conn_with(
     stream.set_nodelay(true).ok();
     stream.set_write_timeout(Some(WRITE_TIMEOUT)).ok();
     let mut writer = stream.try_clone()?;
+    // try_clone 复制的句柄在部分平台上不保证继承 socket 选项：写路径的超时与
+    // nodelay 需要对 writer 自己再设一次（读路径同理，见下方升级处）。
+    writer.set_write_timeout(Some(WRITE_TIMEOUT)).ok();
+    writer.set_nodelay(true).ok();
     let mut reader = BufReader::new(DeadlineReader {
         inner: stream,
         deadline: Some(Instant::now() + header_timeout),
@@ -315,8 +319,17 @@ fn handle_conn_with(
         );
         writer.write_all(resp.as_bytes())?;
         writer.flush()?;
-        // WebSocket 阶段：解除请求头总时限，改用可配置的空闲超时
+        // WebSocket 阶段：解除请求头总时限，改用可配置的空闲超时。
+        // 读超时必须设在 reader 自己持有的那条句柄上：DeadlineReader 在请求头
+        // 阶段会把 SO_RCVTIMEO 设成"剩余期限"（可能只剩几十~几百毫秒），
+        // 若升级时只通过 writer 的复制句柄去改（Windows CI 实测不生效），
+        // reader 会沿用残留的短超时，升级后立刻被当作空闲连接断开。
         reader.get_mut().deadline = None;
+        reader
+            .get_mut()
+            .inner
+            .set_read_timeout(Some(app.idle_timeout))
+            .ok();
         writer.set_read_timeout(Some(app.idle_timeout)).ok();
         let mut w = writer;
         ws_session(&mut reader, &mut w, &app);
