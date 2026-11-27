@@ -8,6 +8,40 @@ alpha 阶段次版本号表示一次不保证兼容的迭代；正式 1.0.0 起�
 
 ## [Unreleased]
 
+### 新增
+
+- **多线程训练**：`train --threads N`。每线程独立网络自博弈（无锁竞争），
+  每 `--merge-every` 局（默认 250）全网络平均合并——TDL2048 的 20 线程
+  lock-free optimistic 并行的保守变体。2 vCPU 沙盒实测 4 线程吞吐 ×2.25。
+- **OTD / OTC / OTD+TC 学习器**（`src/learn.rs`，方法族与 TDL2048+ 同源，
+  Guei et al. IEEE TG 2021）：
+  - 乐观初始化 `--vinit`（默认 80000，均摊到 8 元组）；
+  - TC 学习：逐权重 β = |E|/A 调制有效学习率；
+  - OTD+TC 两阶段（默认）：前 90% 局 OTD、后 10% TC 微调（`--ptc`）；
+  - `--mode otd | otc | otd-tc` 显式选择。
+- **多阶段网络**：`--stages 8192`（默认两阶段）或 `--stages 8192,16384`
+  （三阶段）；各阶段独立权重表，缓解大块状态训练样本不足。
+  权重文件新增多阶段格式（`tables` 数组），**旧单阶段文件仍可加载**；
+  服务器/评估取第一阶段表。
+- **Tile-downgrading 搜索**（`simulate --dg`）：根盘面存在 32768+ 大块且
+  存在缺失中间块时，把大于最大缺失块的块减半后在降级盘面上搜索
+  （TDL2048+ 的 Tile-DG，论文 IV-C.3）。
+- **CLI 配色**（`src/color.rs`，Catppuccin Mocha/Latte）：
+  - 色值内置自官方 palette v3.0.0（零依赖工程不引 crate）；
+  - 语义化样式（title/success/warn/error/info/muted/path/number/keyword）
+    + ASCII 符号前缀（OK/X/!/i）；
+  - 降级链：`--color=never` > `NO_COLOR`(非空) > `TERM=dumb` > `CLICOLOR=0`
+    > `--color=always` > `FORCE_COLOR`/`CLICOLOR_FORCE` > TTY 自动探测；
+    `TERM=dumb` 即使 FORCE_COLOR 也不出 ANSI；降级后零 ANSI 残留；
+  - `train` / `simulate` / `ai2048` 均支持 `--theme` / `--color`，
+    服务器日志同步着色。
+
+### 修复
+
+- Tile-DG 的"最大缺失块"判定：原实现只处理"从最大块往下连续缺失"的情况，
+  在中间块缺失（如 256 缺而 512~16384 都在）时会误判为无缺失；
+  修正为扫描全部 rank 取最大缺失者（由新增单元测试抓出）。
+
 ## [1.0.0-alpha.1] - 2026-11-27
 
 首个发布版。以随包分发的 Go 重构初版（v2.0.1，内部版本号）为基线审查并加固而来，

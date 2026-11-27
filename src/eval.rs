@@ -136,12 +136,36 @@ impl Eval {
 
 /// 从 `weights.json` 加载 TD 权重表。
 /// 期望格式：{"magic":"ai2048-td","games":N,"table":[65536 个数]}
+/// 多阶段格式：{"magic":"ai2048-td","games":N,"stages":[8192],"tables":[[...],[...]]}
+/// （多阶段只取第一阶段用于评估——服务器/搜索按第一阶段估值即可，
+///  阶段切换是训练期的正则化手段。）
 pub fn load_file(path: &str) -> Result<Eval, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {}", path, e))?;
     let j = Json::parse(&text).map_err(|e| format!("{} 不是合法 JSON: {}", path, e))?;
     let magic = j.get("magic").and_then(|v| v.as_str()).unwrap_or("");
     if magic != "ai2048-td" {
         return Err(format!("{} 缺少 magic=ai2048-td 标记", path));
+    }
+    // 新格式：tables 数组（取第一阶段）
+    if let Some(arr) = j.get("tables").and_then(|v| v.as_arr()) {
+        if arr.is_empty() {
+            return Err(format!("{} 的 tables 为空", path));
+        }
+        let first = arr[0]
+            .as_arr()
+            .ok_or_else(|| format!("{} 的 tables[0] 不是数组", path))?;
+        if first.len() != 65536 {
+            return Err(format!(
+                "{} 的 tables[0] 长度应为 65536，实际 {}",
+                path,
+                first.len()
+            ));
+        }
+        let table: Vec<f32> = first
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect();
+        return Eval::from_td_table(table).ok_or_else(|| "table 长度错误".to_string());
     }
     let arr = j
         .get("table")
@@ -159,6 +183,55 @@ pub fn load_file(path: &str) -> Result<Eval, String> {
         .map(|v| v.as_f64().unwrap_or(0.0) as f32)
         .collect();
     Eval::from_td_table(table).ok_or_else(|| "table 长度错误".to_string())
+}
+
+/// 加载多阶段权重（train --resume 用）：返回完整 Stages。
+/// 单阶段旧格式也能加载（thresholds 为空）。
+pub fn load_stages(path: &str) -> Result<crate::learn::Stages, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("读取 {} 失败: {}", path, e))?;
+    let j = Json::parse(&text).map_err(|e| format!("{} 不是合法 JSON: {}", path, e))?;
+    let magic = j.get("magic").and_then(|v| v.as_str()).unwrap_or("");
+    if magic != "ai2048-td" {
+        return Err(format!("{} 缺少 magic=ai2048-td 标记", path));
+    }
+    let thresholds: Vec<u16> = j
+        .get("stages")
+        .and_then(|v| v.as_arr())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_f64())
+                .filter_map(|v| {
+                    let r = v.log2();
+                    if r.fract() == 0.0 && (4.0..=15.0).contains(&r) {
+                        Some(r as u16)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let parse_table = |v: &Json| -> Option<Vec<f32>> {
+        v.as_arr().map(|arr| {
+            arr.iter()
+                .map(|x| x.as_f64().unwrap_or(0.0) as f32)
+                .collect()
+        })
+    };
+    if let Some(tables) = j.get("tables").and_then(|v| v.as_arr()) {
+        let mut all = Vec::with_capacity(tables.len());
+        for t in tables {
+            let tab = parse_table(t).ok_or_else(|| format!("{} 的 tables 项不是数组", path))?;
+            all.push(tab);
+        }
+        crate::learn::Stages::from_tables(thresholds, &all)
+            .ok_or_else(|| format!("{} 的 tables 结构与阈值数不符", path).to_string())
+    } else if let Some(tab) = j.get("table").and_then(parse_table) {
+        crate::learn::Stages::from_tables(vec![], &[tab])
+            .ok_or_else(|| format!("{} 的 table 长度错误", path).to_string())
+    } else {
+        Err(format!("{} 缺少 table/tables 数组", path))
+    }
 }
 
 #[cfg(test)]

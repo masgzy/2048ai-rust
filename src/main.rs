@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ai2048::board::MoveTables;
+use ai2048::color::{self, ColorMode, Theme};
 use ai2048::engine::TTPool;
 use ai2048::eval::{self, Eval, Weights};
 use ai2048::http::{self, App};
@@ -89,6 +90,8 @@ struct Cli {
     host: Option<String>,
     port: Option<u16>,
     weights: Option<String>,
+    theme: Option<Theme>,
+    color: ColorMode,
     help: bool,
     version: bool,
 }
@@ -99,6 +102,8 @@ fn parse_args() -> Result<Cli, String> {
         host: None,
         port: None,
         weights: None,
+        theme: None,
+        color: ColorMode::Auto,
         help: false,
         version: false,
     };
@@ -117,6 +122,28 @@ fn parse_args() -> Result<Cli, String> {
                 cli.port = Some(p);
             }
             "--weights" | "-w" => cli.weights = Some(value()?),
+            "--theme" => {
+                let v = value()?;
+                cli.theme = Some(match v.as_str() {
+                    "mocha" | "dark" => Theme::Mocha,
+                    "latte" | "light" => Theme::Latte,
+                    other => return Err(format!("--theme 须为 mocha | latte，当前 {}", other)),
+                });
+            }
+            "--color" => {
+                let v = value()?;
+                cli.color = match v.as_str() {
+                    "auto" => ColorMode::Auto,
+                    "always" => ColorMode::On,
+                    "never" => ColorMode::Off,
+                    other => {
+                        return Err(format!(
+                            "--color 须为 auto | always | never，当前 {}",
+                            other
+                        ))
+                    }
+                };
+            }
             "--help" | "-h" => cli.help = true,
             "--version" | "-V" => cli.version = true,
             other => return Err(format!("未知参数 {}", other)),
@@ -136,6 +163,8 @@ fn usage() -> String {
          \x20 --host <addr>      监听地址，默认 127.0.0.1（仅本机；局域网用 0.0.0.0）\n\
          \x20 --port, -p <n>     监听端口，默认 8080\n\
          \x20 --weights, -w <p>  TD 权重文件，默认 weights.json（不存在则用内置启发式）\n\
+         \x20 --theme <t>        日志配色口味: mocha | latte（默认 mocha）\n\
+         \x20 --color <c>        颜色开关: auto | always | never（亦受 NO_COLOR/TERM 影响）\n\
          \x20 --help, -h         显示本帮助\n\
          \x20 --version, -V      显示版本\n\
          \n\
@@ -162,6 +191,9 @@ fn main() {
         println!("ai2048 {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+
+    // 配色：在任何日志输出之前裁决（NO_COLOR / TERM=dumb / 非 TTY 自动降级）
+    color::init(cli.color, cli.theme);
 
     // 配置文件：显式 --config 必须加载成功；默认路径存在才尝试
     let mut cfg = Config::default();
@@ -204,15 +236,15 @@ fn main() {
 
     let (ev, label) = match eval::load_file(&cfg.weights) {
         Ok(e) => {
-            eprintln!("[ai2048] 已加载 TD 学习权重: {}", cfg.weights);
+            color::println_info(&format!("已加载 TD 学习权重: {}", cfg.weights));
             (Arc::new(e), format!("TD 学习权重({})", cfg.weights))
         }
         Err(e) => {
             if std::path::Path::new(&cfg.weights).exists() {
-                eprintln!(
-                    "[ai2048] 加载 {} 失败: {}（改用内置启发式）",
+                color::println_warn(&format!(
+                    "加载 {} 失败: {}（改用内置启发式）",
                     cfg.weights, e
-                );
+                ));
             }
             (
                 Arc::new(Eval::build(&Weights::default())),
@@ -237,12 +269,15 @@ fn main() {
         idle_timeout: Duration::from_secs(cfg.idle_timeout_secs),
     });
 
-    eprintln!("[ai2048] 位棋盘 expectimax 引擎就绪（Rust，零第三方依赖）");
+    println!(
+        "{}",
+        color::title("[ai2048] 位棋盘 expectimax 引擎就绪（Rust，零第三方依赖）")
+    );
     if cfg.host == "127.0.0.1" || cfg.host == "localhost" || cfg.host == "::1" {
-        eprintln!("[ai2048] 仅监听本机回环；局域网访问需 --host 0.0.0.0（注意暴露风险）");
+        color::println_info("仅监听本机回环；局域网访问需 --host 0.0.0.0（注意暴露风险）");
     }
     if let Err(e) = http::serve(&cfg.host, cfg.port, app) {
-        eprintln!("[ai2048] 服务器启动失败: {}", e);
+        color::println_err(&format!("服务器启动失败: {}", e));
         std::process::exit(1);
     }
 }

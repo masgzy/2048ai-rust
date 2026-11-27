@@ -1,8 +1,10 @@
 //! simulate —— 无头自对弈基准：验证引擎强度、测量节点/秒。
 //!
 //! 运行 `simulate --help` 查看全部参数。min_ms = 0 表示全自动思考预算（与网页默认一致）。
+//! `--dg` 启用 tile-downgrading expectimax（TDL2048+ 的 Tile-DG）。
 
 use ai2048::board::{MoveTables, Rng};
+use ai2048::color::{self, ColorMode, Theme};
 use ai2048::engine::{self, TTPool};
 use ai2048::eval::{Eval, Weights};
 
@@ -11,9 +13,12 @@ const USAGE: &str = "\
   --games N        对局数（默认 10）
   --min-ms N       每步最少思考毫秒数，0 表示全自动预算（与网页默认一致）
   --max-depth N    搜索深度上限（默认 12，正常无需调整）
+  --dg             启用 tile-downgrading（根节点满足条件时降级搜索，TDL2048+ 的 Tile-DG）
   --seed N         随机种子（默认 1）
   --ref-depth N    大于 0 时改用纯递归 expectimax 走固定 N 层（定位引擎差异用）
   --weights PATH   TD 学习权重文件，不存在则用内置权重（默认 weights.json）
+  --theme T        配色口味: mocha | latte（默认 mocha）
+  --color C        颜色开关: auto | always | never
   --version, -V    显示版本
   --help, -h       显示本帮助";
 
@@ -23,16 +28,41 @@ fn main() {
     let mut max_depth = 12u8;
     let mut seed = 1u64;
     let mut ref_depth_arg = 0u8;
+    let mut dg = false;
     let mut weights_path = String::from("weights.json");
+    let mut cli_color = ColorMode::Auto;
+    let mut cli_theme: Option<Theme> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--games" => games = args.next().and_then(|v| v.parse().ok()).unwrap_or(10),
             "--min-ms" => min_ms = args.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             "--max-depth" => max_depth = args.next().and_then(|v| v.parse().ok()).unwrap_or(12),
+            "--dg" => dg = true,
             "--seed" => seed = args.next().and_then(|v| v.parse().ok()).unwrap_or(1),
             "--ref-depth" => ref_depth_arg = args.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             "--weights" => weights_path = args.next().unwrap_or_else(|| "weights.json".into()),
+            "--theme" => {
+                cli_theme = Some(match args.next().as_deref() {
+                    Some("mocha") | Some("dark") => Theme::Mocha,
+                    Some("latte") | Some("light") => Theme::Latte,
+                    _ => {
+                        eprintln!("--theme 须为 mocha | latte");
+                        std::process::exit(2);
+                    }
+                })
+            }
+            "--color" => {
+                cli_color = match args.next().as_deref() {
+                    Some("auto") => ColorMode::Auto,
+                    Some("always") => ColorMode::On,
+                    Some("never") => ColorMode::Off,
+                    _ => {
+                        eprintln!("--color 须为 auto | always | never");
+                        std::process::exit(2);
+                    }
+                }
+            }
             "--version" | "-V" => {
                 println!("simulate {}（ai2048）", env!("CARGO_PKG_VERSION"));
                 return;
@@ -53,10 +83,15 @@ fn main() {
         std::process::exit(2);
     }
 
+    color::init(cli_color, cli_theme);
+    if dg {
+        color::println_info("已启用 tile-downgrading（根节点降级搜索）");
+    }
+
     let tables = MoveTables::new();
     let ev = match ai2048::eval::load_file(&weights_path) {
         Ok(e) => {
-            eprintln!("使用 TD 学习权重: {}", weights_path);
+            color::println_info(&format!("使用 TD 学习权重: {}", weights_path));
             e
         }
         Err(_) => Eval::build(&Weights::default()),
@@ -145,7 +180,7 @@ fn main() {
                     budget_ms: 0,
                 })
             } else {
-                engine::choose_move(&pool, &tables, &ev, b, min_ms, max_depth).ok()
+                engine::choose_move_ex(&pool, &tables, &ev, b, min_ms, max_depth, dg).ok()
             };
             match picked {
                 Some(r) => {
@@ -201,21 +236,26 @@ fn main() {
     }
 
     let nps = (tot_nodes * 1000).checked_div(tot_ms).unwrap_or(0);
-    println!("================ 汇总 ================");
+    println!("{}", color::title("================ 汇总 ================"));
     println!(
-        "平均分 {:.0}   最高分 {}   平均步数 {:.0}",
-        sum as f64 / games as f64,
-        best,
-        tot_moves as f64 / games as f64
+        "平均分 {}   最高分 {}   平均步数 {}",
+        color::number(&format!("{:.0}", sum as f64 / games as f64)),
+        color::number(&best.to_string()),
+        color::number(&format!("{:.0}", tot_moves as f64 / games as f64))
     );
     println!(
         "达成率: 2048={}/{}  4096={}/{}  8192={}/{}",
-        n2048, games, n4096, games, n8192, games
+        color::number(&n2048.to_string()),
+        color::number(&games.to_string()),
+        color::number(&n4096.to_string()),
+        color::number(&games.to_string()),
+        color::number(&n8192.to_string()),
+        color::number(&games.to_string())
     );
     println!(
         "吞吐:   平均 {} 节点/秒，平均每步 {} ms",
-        nps,
-        tot_ms.checked_div(tot_moves).unwrap_or(0)
+        color::number(&nps.to_string()),
+        color::number(&tot_ms.checked_div(tot_moves).unwrap_or(0).to_string())
     );
     print!("最高块分布:");
     for (rank, c) in hist.iter().enumerate() {

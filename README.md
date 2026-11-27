@@ -48,7 +48,9 @@
 - [网页界面（经典 2048 风格）](#网页界面经典-2048-风格)
 - [WebSocket 协议（/ws，JSON 文本帧）](#websocket-协议wsjson-文本帧)
 - [安全边界](#安全边界)
-- [强化学习（TD 训练器）](#强化学习td-训练器)
+- [强化学习（OTD+TC 训练器）](#强化学习otdtc-训练器)
+- [Tile-downgrading 搜索（TDL2048+ 的 Tile-DG）](#tile-downgrading-搜索tdl2048-的-tile-dg)
+- [CLI 配色（Catppuccin）](#cli-配色catppuccin)
 - [基准工具](#基准工具)
 - [项目结构](#项目结构)
 - [持续集成与构建（GitHub Actions）](#持续集成与构建github-actions)
@@ -292,29 +294,82 @@ curl -i -N --http1.1 http://127.0.0.1:8080/ws \
 仍然存在的边界：没有鉴权、限流和加密；同源校验不是身份验证，任何非浏览器客户端都可以不带 `Origin`。
 一条连接同一时刻只处理一个 `move` 请求，每个请求最多起 4 条搜索线程（每个合法方向一条）。
 
-## 强化学习（TD 训练器）
+## 强化学习（OTD+TC 训练器）
 
-`train` 是一个真正的自博弈 TD 强化学习器（afterstate TD(0)，线性元组价值函数，
-与 Szubert & Jaśkowski 的 2048 TD 方案同族）：
+`train` 是自博弈 TD 强化学习器，方法族与当前最强的开源 2048 学习框架
+**TDL2048+**（[moporgic/TDL2048](https://github.com/moporgic/TDL2048)，MIT；
+Guei, Chen & Wu, *Optimistic Temporal Difference Learning for 2048*,
+IEEE TG 2021）同源：
 
-- 价值函数 V(board) = Σ(4 行 + 4 列) 查同一张 65536 项表，与引擎评估接口完全一致
-- 每步转移做 δ = (r + max_a' V(s')) − V(afterstate) 更新，ε-greedy 探索
-- 产出 `weights.json`，`ai2048` 服务器启动时**自动加载**（页脚显示“评估: TD 学习权重”）
+- **OTD（乐观 TD）**：特征权重初始化为 `Vinit / 8`（默认 Vinit=80000）。
+  未访问状态估值偏高 → 贪心策略主动探索；访问后回落 → 转向其它少访问状态。
+  这是论文推荐的探索机制（ε-greedy 在 2048 上反而有害）。
+- **TC（temporal coherence）**：每个权重维护 δ 的累计和 E 与 |δ| 累计 A，
+  有效学习率按 β = |E|/A 逐权重调制——方向反复翻转的权重自动减速，
+  一致方向的保持全速。
+- **OTD+TC 两阶段**（默认）：前 90% 局 OTD（α=0.1 充分探索），
+  后 10% 切 TC 微调快速收敛（`--ptc` 可调）。
+- **多阶段（multistage）**：默认两阶段（本局出现 8192 后切第二张权重表，
+  `--stages 8192,16384` 可开三阶段），缓解大块状态训练样本不足。
+- **多线程**：`--threads N` 每线程独立网络自博弈（无锁竞争），
+  每 `--merge-every` 局全网络平均合并（TDL2048 的 20 线程 lock-free
+  optimistic 并行的保守变体）。2 vCPU 沙盒实测 4 线程吞吐 ×2.25。
+- 价值函数与引擎评估同构：V(board) = Σ(4 行 + 4 列) 查同一张 65536 项表
+- 产出 `weights.json`，`ai2048` 服务器启动时**自动加载**（页脚显示"评估: TD 学习权重"）
 
 ```bash
 # 快速体验（弱，仅供验证流程）
-cargo run --release --bin train -- --games 500 --alpha 0.001 --eps 0.05
-# 认真训练（数小时/数万局，需长时间挂机；每 500 局自动存档）
-cargo run --release --bin train -- --games 50000 --alpha 0.0005 --eps 0.02 --out weights.json
-# 断点续训
+cargo run --release --bin train -- --games 500
+# 认真训练：4 线程 100 万局（实测约 19k 局/秒/2vCPU；更强机器线性加速）
+cargo run --release --bin train -- --games 1000000 --threads 4 --out weights.json
+# 纯 OTC / 纯 OTD / 单阶段
+cargo run --release --bin train -- --games 50000 --mode otc
+cargo run --release --bin train -- --games 50000 --mode otd --stages ""
+# 断点续训（多阶段文件向后兼容单阶段旧格式）
 cargo run --release --bin train -- --games 50000 --resume weights.json
 ```
+
+**与 TDL2048+ 的差距（如实声明）**：本实现是零依赖单二进制工程的教学级配置，
+元组网络为 4x4 行列 8 元组（TDL2048+ 的 SOTA 用 Matsuzaki 8x6-tuple +
+100M 局 + 20 线程 SHM 无锁共享），论文成绩为平均 625,377 分、72% 32768 达成
+（6-ply 搜索）。本实现 10 万局热身水平约 2.5 万分（2048 达成 45%），
+要逼近论文数字需要 8x6 元组 + 数百万局以上训练量。
 
 参数错误（未知参数、`--games 0`）会打印用法并以退出码 2 结束；`train --help` 列出全部参数。
 
 诚实预期：TD 线性价值函数需要数万局才能逼近甚至超过手调启发式；
 训练期间可用 `simulate` 随时评估（见下）。不训练也完全不影响使用——
 默认的 nneonneo 式启发式 + expectimax 已经是 2048 公认最强算法组合。
+
+## Tile-downgrading 搜索（TDL2048+ 的 Tile-DG）
+
+`simulate --dg` 启用 tile-downgrading expectimax（论文第 IV-C.3 节）：
+根盘面满足**存在 32768+ 大块**且**存在缺失中间块**时，把所有大于最大缺失块的
+块减半得到"降级盘面"，在降级盘面上搜索，选出的方向直接作用于原盘面。
+动机：评估函数对极大块状态训练不足、估值偏差大，降级后的状态与中小块
+状态分布重合、估值更准；论文中该技术把 32768 达成率从 65% 提到 72%。
+
+```bash
+./simulate --games 10 --min-ms 50 --dg   # 冲击 32768 的推荐配置
+```
+
+（服务器端与网页端暂未接 `--dg`；内置启发式评估不走 TD 表，收益有限，
+等 TD 权重成熟后再接入。）
+
+## CLI 配色（Catppuccin）
+
+`train` / `simulate` / `ai2048` 的输出按 [Catppuccin](https://catppuccin.com/palette/)
+配色（Mocha 深色 / Latte 浅色），色值内置自官方 palette v3.0.0
+（零依赖工程不引 crate，常量旁注明来源）：
+
+- 语义化着色：标题 mauve、成功 green（前缀 `OK`）、警告 peach（`!`）、
+  错误 red（`X`）、信息 sky（`i`）、数字 yellow、路径 blue
+- 切换：`--theme mocha|latte` 或环境变量 `CLI_THEME`
+- 降级链（社区规范顺序）：
+  `--color=never` > `NO_COLOR`(非空) > `TERM=dumb` > `CLICOLOR=0`
+  > `--color=always` > `FORCE_COLOR`/`CLICOLOR_FORCE` > TTY 自动探测；
+  降级后零 ANSI 残留，语义靠 ASCII 前缀保持可读
+- 符号前缀用 ASCII（`OK`/`X`/`!`/`i`），不用 `✓✗⚠ℹ`，避免 CI 日志乱码
 
 ## 基准工具
 
@@ -323,6 +378,7 @@ cargo run --release --bin simulate -- --games 4 --seed 99
 #   --games N      对局数（默认 10）
 #   --min-ms 0     全自动预算（与网页默认一致）
 #   --max-depth N  搜索深度上限（默认 12）
+#   --dg           启用 tile-downgrading（见上节）
 #   --ref-depth 5  参考模式：纯递归无 TT 版本，用于交叉验证
 #   --weights PATH TD 权重文件
 ```
@@ -350,10 +406,12 @@ cargo run --release --bin simulate -- --games 4 --seed 99
     ├── lib.rs
     ├── board.rs          # 位棋盘、65536 项行表、转置、RNG（含朴素实现对照测试）
     ├── eval.rs           # 启发式行表（nneonneo 权重）+ TD 权重加载
-    ├── engine.rs         # expectimax、TT 对象池、迭代加深、方向级并行、自动预算
+    ├── engine.rs         # expectimax、TT 对象池、迭代加深、方向级并行、自动预算、Tile-DG
+    ├── learn.rs          # OTD/OTC/OTD+TC 学习器 + 多阶段网络（TDL2048+ 同族方法）
     ├── json.rs           # 极简 JSON 解析/转义
     ├── ws.rs             # RFC6455 + SHA1 + base64（含 RFC 向量测试）
     ├── http.rs           # 极简 HTTP 服务 + 路由 + 限制与超时
+    ├── color.rs          # CLI 配色（Catppuccin Mocha/Latte + NO_COLOR/dumb 降级链）
     ├── ui.rs             # 内嵌前端
     ├── index.html        # 经典 2048 界面（单文件，无外部资源）
     ├── main.rs           # 服务器入口：配置文件 + 命令行

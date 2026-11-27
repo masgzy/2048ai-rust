@@ -250,6 +250,8 @@ pub fn auto_budget(board: u64) -> u64 {
 }
 
 /// 为局面选着法。`min_ms == 0` 为纯自动预算；`min_ms > 0` 为每步最短思考时间下限。
+/// `dg` 为 true 时启用 tile-downgrading：根节点满足条件则先降级再搜索
+/// （TDL2048+ 的 Tile-DG expectimax，见 `downgrade_root`）。
 pub fn choose_move(
     pool: &TTPool,
     t: &MoveTables,
@@ -258,9 +260,31 @@ pub fn choose_move(
     min_ms: u64,
     max_depth: u8,
 ) -> Result<MoveResult, String> {
+    choose_move_ex(pool, t, ev, board, min_ms, max_depth, false)
+}
+
+pub fn choose_move_ex(
+    pool: &TTPool,
+    t: &MoveTables,
+    ev: &Eval,
+    board: u64,
+    min_ms: u64,
+    max_depth: u8,
+    dg: bool,
+) -> Result<MoveResult, String> {
+    let root = if dg {
+        let (d, applied) = downgrade_root(board);
+        if applied {
+            d
+        } else {
+            board
+        }
+    } else {
+        board
+    };
     let mut root_moves: Vec<(u8, u64)> = Vec::with_capacity(4);
     for dir in 0..4u8 {
-        let (nb, _, moved) = t.move_board(board, dir as usize);
+        let (nb, _, moved) = t.move_board(root, dir as usize);
         if moved {
             root_moves.push((dir, nb));
         }
@@ -359,6 +383,49 @@ pub struct GameOutcome {
     pub ms: u64,
 }
 
+/// Tile-downgrading（Guei et al. 2021，TDL2048+ 的 Tile-DG）：
+/// 把根盘面所有大于"最大缺失块"的块减半，得到降级盘面后再搜索。
+/// 论文条件（两个都满足才应用）：存在缺失块（如局面有 32768 而没有 256），
+/// 且存在 32768 或更大的块。降级只在搜索根做一次，树内不再降级；
+/// 降级盘面选出的着法直接作用于原盘面（滑动方向在减半映射下保持）。
+///
+/// 动机：n-tuple/行表评估对极大块状态训练不足、估值偏差大；
+/// 降级后的状态与中小块状态分布重合，估值更准。
+/// 返回 (降级盘面, 是否实际降级)。
+pub fn downgrade_root(b: u64) -> (u64, bool) {
+    let max = board::max_rank(b);
+    // 条件二：最大块 >= 32768（rank 15）
+    if max < 15 {
+        return (b, false);
+    }
+    // 最大缺失块：不超过最大块的所有块中，不在盘面上的最大 rank
+    // （论文：256-tile is the largest missing tile not exceeding the largest tile）
+    let mut missing: u16 = 0;
+    let mut present = [false; 16];
+    for i in 0..16 {
+        present[board::nibble_at(b, i) as usize] = true;
+    }
+    for r in (1..max).rev() {
+        if !present[r as usize] {
+            missing = r;
+            break;
+        }
+    }
+    // 条件一：存在缺失块
+    if missing == 0 {
+        return (b, false);
+    }
+    // 所有 > missing 的块减半（rank - 1）
+    let mut d = b;
+    for i in 0..16 {
+        let v = board::nibble_at(d, i);
+        if v > missing {
+            d = (d & !(0xFu64 << (4 * i))) | (((v - 1) as u64) << (4 * i));
+        }
+    }
+    (d, true)
+}
+
 pub fn play_game(
     pool: &TTPool,
     t: &MoveTables,
@@ -367,12 +434,24 @@ pub fn play_game(
     max_depth: u8,
     rng: &mut board::Rng,
 ) -> GameOutcome {
+    play_game_ex(pool, t, ev, min_ms, max_depth, rng, false)
+}
+
+pub fn play_game_ex(
+    pool: &TTPool,
+    t: &MoveTables,
+    ev: &Eval,
+    min_ms: u64,
+    max_depth: u8,
+    rng: &mut board::Rng,
+    dg: bool,
+) -> GameOutcome {
     let mut b = 0u64;
     for _ in 0..2 {
         b = spawn_tile(b, rng);
     }
     let (mut score, mut moves, mut nodes, mut ms) = (0u64, 0u64, 0u64, 0u64);
-    while let Ok(r) = choose_move(pool, t, ev, b, min_ms, max_depth) {
+    while let Ok(r) = choose_move_ex(pool, t, ev, b, min_ms, max_depth, dg) {
         let (nb, gained, _) = t.move_board(b, r.dir as usize);
         score += gained as u64;
         nodes += r.nodes;
@@ -398,4 +477,68 @@ pub fn spawn_tile(b: u64, rng: &mut board::Rng) -> u64 {
     let idx = empties[rng.below(empties.len() as u64) as usize];
     let rank = if rng.below(10) < 9 { 1u16 } else { 2u16 };
     board::set_nibble(b, idx, rank)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn downgrade_requires_32768_and_missing_tile() {
+        // 条件不满足：没有 32768（rank 15）→ 不降级
+        let b1 = board::set_nibble(0, 0, 14); // 16384
+        assert_eq!(downgrade_root(b1), (b1, false));
+        // 有 32768 且 1..14 全部在场（无缺失）→ 不降级
+        let mut b2 = board::set_nibble(0, 0, 15); // idx0 = 32768
+        for i in 1..=14usize {
+            b2 = board::set_nibble(b2, i, i as u16); // idx1..14 = rank1..14
+        }
+        assert!(!downgrade_root(b2).1);
+    }
+
+    #[test]
+    fn downgrade_halves_above_missing() {
+        // 构造：32768(rank15) + 8192(rank13) + 1024(rank10) + 64(rank6)，
+        // 缺失的最大块是 16384(rank14)？不对——15 在场，14 缺失 → missing=14，
+        // 所有 >14 的块（只有 15）减半成 14。
+        let mut b = board::set_nibble(0, 0, 15);
+        b = board::set_nibble(b, 1, 13);
+        b = board::set_nibble(b, 2, 10);
+        let (d, applied) = downgrade_root(b);
+        assert!(applied);
+        assert_eq!(board::nibble_at(d, 0), 14); // 32768 → 16384
+        assert_eq!(board::nibble_at(d, 1), 13); // 8192 不动（不 > missing=14）
+        assert_eq!(board::nibble_at(d, 2), 10);
+        // 论文图 10 的形态：最大块 32768、最大缺失 256 → 大于 256 的全部减半。
+        // 构造：idx0=15(32768)；idx1..7 = 1..7（2..128，但 256/8 缺失）；
+        // idx8..14 = 9..15；present = {1..7, 9..15}，missing = 8。
+        let mut b2 = board::set_nibble(0, 0, 15);
+        for i in 1..=14usize {
+            let r = if i >= 8 { (i as u16) + 1 } else { i as u16 };
+            b2 = board::set_nibble(b2, i, r);
+        }
+        let (d2, ok) = downgrade_root(b2);
+        assert!(ok, "missing=8 应触发降级");
+        // missing = 8（256 缺失），所有 rank>8 减半
+        assert_eq!(board::nibble_at(d2, 0), 14); // idx0: 15→14
+        assert_eq!(board::nibble_at(d2, 7), 7); // rank7 (128) 不动
+        assert_eq!(board::nibble_at(d2, 8), 8); // idx8 原 rank9(512) → 8(256)
+        assert_eq!(board::nibble_at(d2, 14), 14); // idx14 原 rank15→14
+    }
+
+    #[test]
+    fn downgrade_dir_preserved() {
+        // 降级只改块值不改布局：move_board 对降级盘面与原盘面应给出同方向合法着法集合
+        let mut b = board::set_nibble(0, 0, 15);
+        b = board::set_nibble(b, 5, 13);
+        b = board::set_nibble(b, 10, 10);
+        let (d, applied) = downgrade_root(b);
+        assert!(applied);
+        let t = MoveTables::new();
+        for dir in 0..4 {
+            let (_, _, m1) = t.move_board(b, dir);
+            let (_, _, m2) = t.move_board(d, dir);
+            assert_eq!(m1, m2, "方向 {} 的可动性应一致", dir);
+        }
+    }
 }
