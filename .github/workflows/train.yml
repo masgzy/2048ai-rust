@@ -1,0 +1,415 @@
+name: Train
+
+# 在 GitHub Actions 里跑 2048 TD 强化学习训练，产出 weights.json 附件。
+#
+# 菜单（workflow_dispatch 表单）可调：
+#   max_minutes  最大训练时间（分钟），到点自动保存并结束
+#   games        训练局数，0 = 不限（一直训到 max_minutes 用完）
+#   threads      并行线程数（默认 1，见下方说明）
+#   mode         otd-tc / otd / otc
+#   alpha/eps/ptc/vinit/stages/seed 训练超参
+#   chunk_games  每段局数（分段是为了时间可控 + 每段落一次盘）
+#   binary_source  prebuilt（默认，用最新 Linux amd64 预编译产物）/ source（源码编译）
+#   source_run_id 预编译产物所在的 build 运行 ID（留空 = 自动取最近一次成功的 build）
+#   resume_run_id 从上一次训练运行的附件里接着训（留空 = 从零开始）
+#   eval_games   训练结束后用 simulate 评估的对局数（0 = 不评估）
+#
+# 说明：train 只在**跑完时**写一次权重，没有信号处理、也不接受 --games 0。
+# 因此这里用「分段训练 + --resume 续训」实现时间预算：
+#   每段正常结束 -> 原子替换 weights.json（可续训，可上传）；
+#   某段被时间截断 -> 丢弃该段半成品，保留上一段完整权重。
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_minutes:
+        description: "最大训练时间（分钟）"
+        required: true
+        default: "240"
+        type: string
+      games:
+        description: "训练局数（0 = 不限，直到 max_minutes 用完）"
+        required: true
+        default: "0"
+        type: string
+      threads:
+        description: "并行线程数（默认 1；>1 时上游实现每轮把各线程网络与主网络平均，会稀释已学到的权重）"
+        required: false
+        default: "1"
+        type: string
+      mode:
+        description: "学习器"
+        required: false
+        default: "otd-tc"
+        type: choice
+        options: [otd-tc, otd, otc]
+      alpha:
+        description: "学习率（OTC 建议 1.0）"
+        required: false
+        default: "0.1"
+        type: string
+      eps:
+        description: "ε-greedy 探索概率"
+        required: false
+        default: "0.01"
+        type: string
+      ptc:
+        description: "OTD+TC 中 TC 微调阶段占比（0~1）"
+        required: false
+        default: "0.1"
+        type: string
+      vinit:
+        description: "乐观初始化值 Vinit（0 关闭）"
+        required: false
+        default: "80000"
+        type: string
+      stages:
+        description: "多阶段阈值，如 8192 或 8192,16384（空 = 单阶段）"
+        required: false
+        default: "8192"
+        type: string
+      seed:
+        description: "随机种子"
+        required: false
+        default: "1"
+        type: string
+      chunk_games:
+        description: "每段局数（每段结束落一次盘）"
+        required: false
+        default: "200000"
+        type: string
+      binary_source:
+        description: "训练器来源"
+        required: false
+        default: "prebuilt"
+        type: choice
+        options: [prebuilt, source]
+      source_run_id:
+        description: "预编译产物所在的 build 运行 ID（留空 = 自动取最近一次成功的 build）"
+        required: false
+        default: "46051031700"
+        type: string
+      resume_run_id:
+        description: "从该训练运行的 weights 附件接着训（留空 = 从零开始）"
+        required: false
+        default: ""
+        type: string
+      eval_games:
+        description: "训练结束后 simulate 评估的对局数（0 = 不评估）"
+        required: false
+        default: "5"
+        type: string
+  # 需要定时训练时打开下面这段（注意会持续占用 runner 时间）：
+  # schedule:
+  #   - cron: "17 2 * * *"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: train-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  train:
+    name: 训练并上传权重
+    runs-on: ubuntu-24.04
+    # GitHub 托管 runner 单作业上限 6 小时；训练自身的时间预算是 max_minutes，
+    # 校验里已限制 max_minutes <= 330，给落盘与上传留出余量。
+    timeout-minutes: 360
+    env:
+      MAX_MINUTES: ${{ inputs.max_minutes || '240' }}
+      GAMES: ${{ inputs.games || '0' }}
+      THREADS: ${{ inputs.threads || '1' }}
+      MODE: ${{ inputs.mode || 'otd-tc' }}
+      ALPHA: ${{ inputs.alpha || '0.1' }}
+      EPS: ${{ inputs.eps || '0.01' }}
+      PTC: ${{ inputs.ptc || '0.1' }}
+      VINIT: ${{ inputs.vinit || '80000' }}
+      STAGES: ${{ inputs.stages || '8192' }}
+      SEED: ${{ inputs.seed || '1' }}
+      CHUNK_GAMES: ${{ inputs.chunk_games || '200000' }}
+      BINARY_SOURCE: ${{ inputs.binary_source || 'prebuilt' }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id || '' }}
+      RESUME_RUN_ID: ${{ inputs.resume_run_id || '' }}
+      EVAL_GAMES: ${{ inputs.eval_games || '0' }}
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v7
+
+      - name: 参数校验
+        run: |
+          set -uo pipefail
+          fail=0
+          is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+          for pair in "MAX_MINUTES:$MAX_MINUTES" "GAMES:$GAMES" "THREADS:$THREADS" \
+                      "CHUNK_GAMES:$CHUNK_GAMES" "EVAL_GAMES:$EVAL_GAMES" "SEED:$SEED"; do
+            name="${pair%%:*}"; value="${pair#*:}"
+            if ! is_uint "$value"; then
+              echo "::error::$name 必须是非负整数，当前为 '$value'"; fail=1
+            fi
+          done
+          if is_uint "$MAX_MINUTES" && [ "$MAX_MINUTES" -lt 1 ]; then
+            echo "::error::max_minutes 必须 >= 1"; fail=1
+          fi
+          if is_uint "$MAX_MINUTES" && [ "$MAX_MINUTES" -gt 330 ]; then
+            echo "::error::max_minutes 不能超过 330（GitHub 托管 runner 单作业最长 6 小时，需留出上传附件的时间）"; fail=1
+          fi
+          if is_uint "$THREADS" && [ "$THREADS" -lt 1 ]; then
+            echo "::error::threads 必须 >= 1"; fail=1
+          fi
+          if is_uint "$CHUNK_GAMES" && [ "$CHUNK_GAMES" -lt 1 ]; then
+            echo "::error::chunk_games 必须 >= 1"; fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
+          echo "训练配置: 最长 ${MAX_MINUTES} 分钟 / 局数 $([ "$GAMES" -eq 0 ] && echo 不限 || echo "$GAMES") / 线程 $THREADS / 模式 $MODE / 每段 $CHUNK_GAMES 局"
+
+      - name: 获取训练器（Linux amd64）
+        id: bin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          PREBUILT="$RUNNER_TEMP/prebuilt"
+          mkdir -p "$PREBUILT"
+          got=0
+          download() {
+            local rid="$1"
+            [ -n "$rid" ] || return 1
+            echo "尝试下载 build 运行 $rid 的产物 ai2048-linux_amd64 ..."
+            if gh run download "$rid" --repo "$GITHUB_REPOSITORY" \
+                 --name "ai2048-linux_amd64" --dir "$PREBUILT"; then
+              return 0
+            fi
+            return 1
+          }
+          if [ "$BINARY_SOURCE" = "prebuilt" ]; then
+            download "$SOURCE_RUN_ID" && got=1
+            if [ "$got" -eq 0 ]; then
+              latest=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
+                         --status success --limit 1 --json databaseId \
+                         --jq '.[0].databaseId' 2>/dev/null || true)
+              echo "回退：使用最近一次成功的 build 运行 ${latest:-<无>}"
+              [ -n "$latest" ] && [ "$latest" != "null" ] && download "$latest" && got=1
+            fi
+          fi
+          train_bin=$(find "$PREBUILT" -type f -name train 2>/dev/null | head -1)
+          sim_bin=$(find "$PREBUILT" -type f -name simulate 2>/dev/null | head -1)
+          if [ -n "$train_bin" ]; then
+            chmod +x "$train_bin"; [ -n "$sim_bin" ] && chmod +x "$sim_bin"
+            echo "使用预编译训练器: $train_bin"
+          else
+            echo "预编译产物不可用（可能已过期），回退到源码编译"
+            rustup toolchain install stable --profile minimal
+            cargo build --release --locked --bins
+            train_bin="$PWD/target/release/train"
+            sim_bin="$PWD/target/release/simulate"
+          fi
+          "$train_bin" --version || true
+          echo "train=$train_bin" >> "$GITHUB_OUTPUT"
+          echo "simulate=$sim_bin" >> "$GITHUB_OUTPUT"
+
+      - name: 载入续训权重（可选）
+        id: resume
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          RESUME_FILE=""
+          if [ -n "$RESUME_RUN_ID" ]; then
+            dir="$RUNNER_TEMP/resume"
+            mkdir -p "$dir"
+            if gh run download "$RESUME_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+                 --pattern "weights-*" --dir "$dir"; then
+              cand=$(find "$dir" -type f -name weights.json | head -1)
+              if [ -n "$cand" ]; then
+                RESUME_FILE="$cand"
+                echo "将从此权重继续训练: $cand"
+              else
+                echo "::warning::运行 $RESUME_RUN_ID 的附件里没有 weights.json，从零开始"
+              fi
+            else
+              echo "::warning::无法下载运行 $RESUME_RUN_ID 的附件，从零开始"
+            fi
+          fi
+          echo "file=$RESUME_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: 训练
+        env:
+          TRAIN_BIN: ${{ steps.bin.outputs.train }}
+          RESUME_WEIGHTS: ${{ steps.resume.outputs.file }}
+        run: |
+          cat > "$RUNNER_TEMP/train_loop.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          # 分段训练 + 续训 + 时间预算控制
+          set -uo pipefail
+
+          MAX_MINUTES="${MAX_MINUTES}"
+          GAMES="${GAMES}"
+          THREADS="${THREADS}"
+          MODE="${MODE}"
+          ALPHA="${ALPHA}"
+          EPS="${EPS}"
+          PTC="${PTC}"
+          VINIT="${VINIT}"
+          STAGES="${STAGES}"
+          SEED="${SEED}"
+          CHUNK_GAMES="${CHUNK_GAMES}"
+          TRAIN_BIN="${TRAIN_BIN}"
+          RESUME_WEIGHTS="${RESUME_WEIGHTS:-}"
+
+          WORK="$RUNNER_TEMP/train"
+          mkdir -p "$WORK"
+          WEIGHTS="$WORK/weights.json"       # 当前有效权重（每次成功落盘后原子替换）
+          NEXT="$WORK/weights.next.json"     # 本段训练产物（成功后才采纳）
+          LOG="$RUNNER_TEMP/train.log"
+
+          if [ -n "$RESUME_WEIGHTS" ] && [ -s "$RESUME_WEIGHTS" ]; then
+            cp -f "$RESUME_WEIGHTS" "$WEIGHTS"
+            echo "已载入起始权重: $WEIGHTS ($(stat -c%s "$WEIGHTS") 字节)"
+          fi
+
+          START=$(date +%s)
+          DEADLINE=$((START + MAX_MINUTES * 60))
+          PTC_PCT=$(awk -v p="$PTC" 'BEGIN{printf "%d", (p*100)+0.5}')
+          # stages 传 none / single 表示单阶段
+          case "$STAGES" in none|single) STAGES="";; esac
+          DONE=0
+          RESUME_ARG=""
+          ROUND=0
+
+          while :; do
+            NOW=$(date +%s)
+            REMAIN=$((DEADLINE - NOW))
+            if [ "$REMAIN" -le 10 ]; then
+              echo "时间预算已用尽（${MAX_MINUTES} 分钟）"
+              break
+            fi
+
+            if [ "$GAMES" -gt 0 ]; then
+              LEFT=$((GAMES - DONE))
+              if [ "$LEFT" -le 0 ]; then
+                echo "已完成目标局数 $DONE"
+                break
+              fi
+              CHUNK=$CHUNK_GAMES
+              [ "$CHUNK" -gt "$LEFT" ] && CHUNK=$LEFT
+              if [ "$MODE" = "otd-tc" ]; then
+                # 按全局局号切 TC 微调段（分段训练下仍保持与单次训练一致的阶段划分）
+                TC_START=$(( GAMES * (100 - PTC_PCT) / 100 ))
+                if [ "$DONE" -ge "$TC_START" ]; then
+                  PHASE="otc"
+                else
+                  PHASE="otd"
+                  if [ $((DONE + CHUNK)) -gt "$TC_START" ]; then
+                    CHUNK=$((TC_START - DONE))
+                    [ "$CHUNK" -le 0 ] && { PHASE="otc"; }
+                  fi
+                fi
+              else
+                PHASE="$MODE"
+              fi
+            else
+              CHUNK=$CHUNK_GAMES
+              PHASE="$MODE"
+            fi
+            [ "$CHUNK" -le 0 ] && break
+
+            echo ">>> 第 $((ROUND + 1)) 段：$CHUNK 局 / 模式 $PHASE / 剩余预算 ${REMAIN}s / 已完成 $DONE 局"
+            rc=0
+            timeout --signal=TERM --kill-after=15s "$REMAIN" \
+              "$TRAIN_BIN" \
+                --games "$CHUNK" \
+                --threads "$THREADS" \
+                --merge-every 250 \
+                --mode "$PHASE" \
+                --alpha "$ALPHA" \
+                --eps "$EPS" \
+                --vinit "$VINIT" \
+                --stages "$STAGES" \
+                --seed "$SEED" \
+                --out "$NEXT" \
+                $RESUME_ARG 2>&1 | tee -a "$LOG"
+            rc=${PIPESTATUS[0]}
+
+            case "$rc" in
+              0) ;;
+              124|143|137)
+                echo "本段因时间预算被终止；保留上一段完整权重，丢弃本段半成品"
+                rm -f "$NEXT"
+                REMAIN=0
+                ;;
+              *)
+                echo "::error::训练进程异常退出 (rc=$rc)，见日志 $LOG"
+                exit "$rc"
+                ;;
+            esac
+            [ "$REMAIN" -eq 0 ] && break
+
+            if [ ! -s "$NEXT" ]; then
+              echo "::error::本段没有产出权重文件"
+              exit 1
+            fi
+            mv -f "$NEXT" "$WEIGHTS"
+            DONE=$((DONE + CHUNK))
+            RESUME_ARG="--resume $WEIGHTS"
+            ROUND=$((ROUND + 1))
+            echo "<<< 第 $ROUND 段完成，累计 $DONE 局"
+          done
+
+          ELAPSED=$(( $(date +%s) - START ))
+          if [ -s "$WEIGHTS" ]; then
+            # 把 JSON 里的 games 修正为累计局数
+            jq --argjson g "$DONE" '.games = $g' "$WEIGHTS" > "$WORK/weights.fixed.json" \
+              && mv -f "$WORK/weights.fixed.json" "$WEIGHTS"
+            cp -f "$WEIGHTS" "$GITHUB_WORKSPACE/weights.json"
+            cp -f "$LOG" "$GITHUB_WORKSPACE/train.log" 2>/dev/null || true
+            RATE=0
+            [ "$ELAPSED" -gt 0 ] && RATE=$((DONE / ELAPSED))
+            {
+              echo "## 训练结果"
+              echo ""
+              echo "| 项目 | 值 |"
+              echo "| --- | --- |"
+              echo "| 完成局数 | $DONE |"
+              echo "| 用时 | $((ELAPSED / 60)) 分 $((ELAPSED % 60)) 秒 |"
+              echo "| 平均速度 | $RATE 局/秒 |"
+              echo "| 段数 | $ROUND |"
+              echo "| 模式 | $MODE（alpha=$ALPHA eps=$EPS ptc=$PTC vinit=$VINIT stages=$STAGES） |"
+              echo "| 权重文件 | weights.json（$(stat -c%s "$WEIGHTS") 字节） |"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "训练结束：$DONE 局 / ${ELAPSED}s，权重已保存"
+          else
+            echo "::error::训练结束但没有产出权重"
+            exit 1
+          fi
+          SCRIPT
+          bash "$RUNNER_TEMP/train_loop.sh"
+
+      - name: 评估（simulate）
+        env:
+          SIM_BIN: ${{ steps.bin.outputs.simulate }}
+        run: |
+          set -uo pipefail
+          case "$EVAL_GAMES" in
+            ''|*[!0-9]*) echo "eval_games 非数字，跳过评估"; exit 0 ;;
+          esac
+          [ "$EVAL_GAMES" -eq 0 ] && { echo "eval_games = 0，跳过评估"; exit 0; }
+          if [ ! -x "$SIM_BIN" ]; then
+            echo "没有可用的 simulate，跳过评估"
+            exit 0
+          fi
+          "$SIM_BIN" --games "$EVAL_GAMES" --weights "$GITHUB_WORKSPACE/weights.json" --seed 7 \
+            | tee -a "$GITHUB_WORKSPACE/train.log" || true
+
+      - name: 上传权重附件
+        uses: actions/upload-artifact@v7
+        with:
+          name: weights-${{ github.run_id }}
+          path: |
+            weights.json
+            train.log
+          if-no-files-found: error
+          retention-days: 30
